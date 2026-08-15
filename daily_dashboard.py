@@ -27,6 +27,9 @@ SYMBOLS = {
     "USDJPY": "JPY=X",
 }
 
+# Deep link straight to the workflow run page - update this if your username/repo differ
+REPO_ACTIONS_URL = "https://github.com/Ethanol-Exclusive/fx-dashboard/actions/workflows/update-dashboard.yml"
+
 STATUS_COLORS = {
     "waiting": "#555",
     "sweep_only": "#c9a227",
@@ -185,12 +188,24 @@ def build_dashboard():
   .levels .row b {{ color: #fff; }}
   .notes {{ font-size: 11px; color: #777; margin-top: 6px; line-height: 1.4; }}
   footer {{ font-size: 10px; color: #555; text-align: center; margin-top: 24px; padding-bottom: 20px; }}
+  .refresh-btn {{
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: #1a1a1f; border: 1px solid #2a2a30; color: #eee;
+    text-decoration: none; font-size: 13px; font-weight: 600;
+    padding: 12px 16px; border-radius: 10px; margin-top: 10px;
+  }}
+  .refresh-btn:active {{ background: #232328; }}
+  .refresh-note {{ font-size: 10px; color: #666; text-align: center; margin-top: 6px; line-height: 1.4; }}
 </style>
 </head>
 <body>
 <header>
   <h1>Exclusive FX — Daily Setup Dashboard</h1>
   <div class="ts">Updated {now}</div>
+  <a class="refresh-btn" href="{REPO_ACTIONS_URL}" target="_blank" rel="noopener">
+    ⟳ Refresh Analysis
+  </a>
+  <div class="refresh-note">Opens GitHub Actions — tap the green "Run workflow" button there, wait ~30s, then come back and reload this page.</div>
 </header>
 {''.join(sections)}
 <footer>
