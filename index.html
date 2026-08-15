@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Exclusive FX — Daily Dashboard</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px;
+    background: #0d0d0f; color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif;
+  }
+  header { margin-bottom: 20px; }
+  header h1 { font-size: 20px; margin: 0 0 4px 0; }
+  header .ts { font-size: 12px; color: #888; }
+  .instrument { margin-bottom: 24px; }
+  .instrument h2 {
+    font-size: 16px; margin: 0 0 8px 0; color: #fff;
+    border-bottom: 1px solid #222; padding-bottom: 6px;
+  }
+  .setup-card {
+    background: #16161a; border-radius: 10px; padding: 12px 14px;
+    margin-bottom: 10px; border: 1px solid #232327;
+  }
+  .setup-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 6px;
+  }
+  .setup-name { font-size: 13px; color: #ccc; font-weight: 600; }
+  .status-pill {
+    font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 20px;
+    color: #fff; letter-spacing: 0.3px;
+  }
+  .range { font-size: 11px; color: #888; margin-bottom: 6px; }
+  .levels { background: #0f0f12; border-radius: 8px; padding: 8px 10px; margin: 6px 0; }
+  .levels .dir { font-size: 12px; font-weight: 800; margin-bottom: 4px; letter-spacing: 0.5px; }
+  .levels .row {
+    display: flex; justify-content: space-between; font-size: 12px;
+    padding: 2px 0; color: #bbb;
+  }
+  .levels .row b { color: #fff; }
+  .notes { font-size: 11px; color: #777; margin-top: 6px; line-height: 1.4; }
+  footer { font-size: 10px; color: #555; text-align: center; margin-top: 24px; padding-bottom: 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Exclusive FX — Daily Setup Dashboard</h1>
+  <div class="ts">Updated 2026-08-15 19:19 (SAMPLE DATA)</div>
+</header>
+
+    <div class="instrument">
+      <h2>GOLD</h2>
+      
+    <div class="setup-card">
+      <div class="setup-header">
+        <span class="setup-name">Daily PDH/PDL</span>
+        <span class="status-pill" style="background:#1e9e5a">SIGNAL LIVE</span>
+      </div>
+      <div class="range">Previous Day: 1998.2000 — 2015.4000</div>
+      
+        <div class="levels">
+          <div class="dir" style="color:#1e9e5a">LONG</div>
+          <div class="row"><span>Entry</span><b>2001.3500</b></div>
+          <div class="row"><span>Stop Loss</span><b>1997.1000</b></div>
+          <div class="row"><span>TP1 (→ move SL to BE)</span><b>2015.4000</b></div>
+          <div class="row"><span>TP2</span><b>2022.8000</b></div>
+          <div class="row"><span>Confluence</span><b>FVG, Breaker Block</b></div>
+        </div>
+        
+      <div class="notes">MSS confirmed LONG off previous day low sweep.</div>
+    </div>
+    
+      
+    <div class="setup-card">
+      <div class="setup-header">
+        <span class="setup-name">NY 5AM CRT</span>
+        <span class="status-pill" style="background:#555">WAITING</span>
+      </div>
+      <div class="range">5AM NY Candle: 2005.6000 — 2010.1000</div>
+      
+      <div class="notes">No sweep of the 5AM NY candle range yet.</div>
+    </div>
+    
+    </div>
+    
+    <div class="instrument">
+      <h2>NAS100</h2>
+      
+    <div class="setup-card">
+      <div class="setup-header">
+        <span class="setup-name">Daily PDH/PDL</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
+      </div>
+      <div class="range">Previous Day: 18700.0000 — 18900.0000</div>
+      
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>Previous Day HIGH</b></div>
+          <div class="row"><span>Sweep price</span><b>18915.0000</b></div>
+        </div>
+        
+      <div class="notes">Sweep of PDH detected - waiting for MSS confirmation.</div>
+    </div>
+    
+      
+    <div class="setup-card">
+      <div class="setup-header">
+        <span class="setup-name">NY 5AM CRT</span>
+        <span class="status-pill" style="background:#555">WAITING</span>
+      </div>
+      <div class="range">5AM NY Candle: 18760.0000 — 18820.0000</div>
+      
+      <div class="notes">5AM NY candle marked - waiting for price action after it.</div>
+    </div>
+    
+    </div>
+    
+    <div class="instrument">
+      <h2>EURUSD</h2>
+      
+    <div class="setup-card">
+      <div class="setup-header">
+        <span class="setup-name">Daily PDH/PDL</span>
+        <span class="status-pill" style="background:#555">WAITING</span>
+      </div>
+      <div class="range">Previous Day: 1.0870 — 1.0915</div>
+      
+      <div class="notes">No sweep of PDH/PDL yet today.</div>
+    </div>
+    
+      
+    <div class="setup-card">
+      <div class="setup-header">
+        <span class="setup-name">NY 5AM CRT</span>
+        <span class="status-pill" style="background:#555">WAITING</span>
+      </div>
+      <div class="range">5AM NY Candle: 1.0888 — 1.0902</div>
+      
+      <div class="notes">No sweep of the 5AM NY candle range yet.</div>
+    </div>
+    
+    </div>
+    
+    <div class="instrument">
+      <h2>USDJPY</h2>
+      
+    <div class="setup-card">
+      <div class="setup-header">
+        <span class="setup-name">Daily PDH/PDL</span>
+        <span class="status-pill" style="background:#999">NO DATA</span>
+      </div>
+      <div class="range">Previous Day: 154.1000 — 155.2000</div>
+      
+      <div class="notes">Waiting on data feed.</div>
+    </div>
+    
+      
+    <div class="setup-card">
+      <div class="setup-header">
+        <span class="setup-name">NY 5AM CRT</span>
+        <span class="status-pill" style="background:#999">NO DATA</span>
+      </div>
+      <div class="range">5AM NY Candle: 154.5500 — 154.9000</div>
+      
+      <div class="notes">Waiting on data feed.</div>
+    </div>
+    
+    </div>
+    
+<footer>
+  Setup A = Daily PDH/PDL sweep · Setup B = NY 5AM candle range (CRT)<br>
+  TP1 = nearest unswept liquidity → move SL to breakeven · TP2 = next liquidity beyond<br>
+  Not financial advice. Demo-test before live.
+</footer>
+</body>
+</html>
