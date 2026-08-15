@@ -295,7 +295,20 @@ def analyze_daily_setup(df_daily: pd.DataFrame, df_intraday: pd.DataFrame, symbo
 
     # restrict intraday df to candles that occurred after prev day's close (today's session)
     today_start = df_daily.index[-1]
-    intraday_today = df_intraday[df_intraday.index >= today_start]
+
+    # align timezone-awareness between today_start and df_intraday's index
+    # before comparing, otherwise pandas raises on tz-naive vs tz-aware
+    intraday_idx = df_intraday.index
+    if intraday_idx.tz is None and today_start.tzinfo is not None:
+        today_start_cmp = today_start.tz_localize(None)
+    elif intraday_idx.tz is not None and today_start.tzinfo is None:
+        today_start_cmp = today_start.tz_localize(intraday_idx.tz)
+    elif intraday_idx.tz is not None and today_start.tzinfo is not None:
+        today_start_cmp = today_start.tz_convert(intraday_idx.tz)
+    else:
+        today_start_cmp = today_start
+
+    intraday_today = df_intraday[df_intraday.index >= today_start_cmp]
     if len(intraday_today) < 10:
         state.status = "waiting"
         state.notes = "Not enough of today's session data yet."
@@ -394,6 +407,8 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
         session_start_cmp = session_start.tz_localize(None)
     elif intraday_idx.tz is not None and session_start.tzinfo is None:
         session_start_cmp = session_start.tz_localize(intraday_idx.tz)
+    elif intraday_idx.tz is not None and session_start.tzinfo is not None:
+        session_start_cmp = session_start.tz_convert(intraday_idx.tz)
     else:
         session_start_cmp = session_start
 
