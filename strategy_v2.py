@@ -182,10 +182,14 @@ def detect_sweep_and_mss(
     search_start: int = 0,
 ) -> dict:
     """
-    Scans forward from search_start looking for:
-      1. A sweep of range_high or range_low (wick beyond, close back inside)
-      2. A subsequent Market Structure Shift confirming reversal
-    Returns a dict describing what was found (used to build a SetupState).
+    Scans forward from search_start looking for sweeps of range_high/range_low
+    and subsequent Market Structure Shifts.
+
+    IMPORTANT: this tracks the MOST RECENT sweep, not the first one of the day.
+    Price often sweeps one side, fails to follow through, then later sweeps the
+    other side and reverses for real - the dashboard should reflect whichever
+    setup is currently live/actionable, not a stale one from earlier in the
+    session. Each new sweep (either side) overwrites any prior untracked state.
     """
     highs, lows, closes = df["High"].values, df["Low"].values, df["Close"].values
     result = {
@@ -194,33 +198,53 @@ def detect_sweep_and_mss(
     }
 
     for i in range(search_start, len(df)):
-        # sweep of the low -> potential long
-        if lows[i] < range_low and closes[i] > range_low and not result["sweep_detected"]:
-            result.update(sweep_detected=True, sweep_side="low", sweep_index=i, sweep_price=lows[i])
-        # sweep of the high -> potential short
-        elif highs[i] > range_high and closes[i] < range_high and not result["sweep_detected"]:
-            result.update(sweep_detected=True, sweep_side="high", sweep_index=i, sweep_price=highs[i])
+        # Only count this as a NEW sweep if the previous candle hadn't already
+        # poked past the level - otherwise a slow grind through the range
+        # (e.g. a strong trending continuation) would re-trigger "sweep" on
+        # almost every candle and falsely flip the reported direction.
+        prev_high_ok = i == 0 or highs[i - 1] <= range_high
+        prev_low_ok = i == 0 or lows[i - 1] >= range_low
+
+        # Once MSS has confirmed a direction, the original range has done its
+        # job - don't let a later retest of that same range flip the signal.
+        # Only a sweep of the OPPOSITE side (a genuine new setup) should override.
+        if result["mss_confirmed"]:
+            if result["direction"] == "long" and lows[i] < range_low and closes[i] > range_low and prev_low_ok:
+                pass  # same-side retest, ignore
+            elif result["direction"] == "short" and highs[i] > range_high and closes[i] < range_high and prev_high_ok:
+                pass  # same-side retest, ignore
+            elif result["direction"] == "long" and highs[i] > range_high and closes[i] < range_high and prev_high_ok:
+                result.update(sweep_detected=True, sweep_side="high", sweep_index=i, sweep_price=highs[i],
+                               mss_confirmed=False, mss_index=None, direction=None)
+            elif result["direction"] == "short" and lows[i] < range_low and closes[i] > range_low and prev_low_ok:
+                result.update(sweep_detected=True, sweep_side="low", sweep_index=i, sweep_price=lows[i],
+                               mss_confirmed=False, mss_index=None, direction=None)
+        else:
+            if lows[i] < range_low and closes[i] > range_low and prev_low_ok:
+                result.update(sweep_detected=True, sweep_side="low", sweep_index=i, sweep_price=lows[i],
+                               mss_confirmed=False, mss_index=None, direction=None)
+            elif highs[i] > range_high and closes[i] < range_high and prev_high_ok:
+                result.update(sweep_detected=True, sweep_side="high", sweep_index=i, sweep_price=highs[i],
+                               mss_confirmed=False, mss_index=None, direction=None)
 
         if result["sweep_detected"] and not result["mss_confirmed"]:
             sweep_i = result["sweep_index"]
             if i <= sweep_i:
                 continue
-            # structure level to break = nearest swing point of the OPPOSITE kind
-            # formed before the sweep (this is what confirms the reversal)
             if result["sweep_side"] == "low":
                 prior_highs = [s for s in swings if s.kind == "high" and s.index < i]
                 if prior_highs:
                     structure_level = prior_highs[-1].price
                     if closes[i] > structure_level:
                         result.update(mss_confirmed=True, mss_index=i, direction="long")
-                        break
             else:
                 prior_lows = [s for s in swings if s.kind == "low" and s.index < i]
                 if prior_lows:
                     structure_level = prior_lows[-1].price
                     if closes[i] < structure_level:
                         result.update(mss_confirmed=True, mss_index=i, direction="short")
-                        break
+            # NOTE: no `break` here anymore - we keep scanning to the end of the
+            # data so a later opposite sweep can still override this if it happens
 
     return result
 
