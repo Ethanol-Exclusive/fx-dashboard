@@ -394,7 +394,9 @@ def get_5am_ny_candle_range(df_4h: pd.DataFrame) -> Optional[dict]:
     """
     df_4h: 4H OHLC with a tz-aware or naive DatetimeIndex (assumed UTC if naive).
     Finds the most recent 4H candle whose NY-time hour is 5 (the 5AM NY candle),
-    and returns its high/low.
+    and returns its high/low along with the time it FINISHES printing (its close,
+    ~9AM NY for a 4H candle starting at 5AM) - entries should only be hunted for
+    after that point, once the range is actually locked in.
     """
     idx = df_4h.index
     if idx.tz is None:
@@ -407,13 +409,19 @@ def get_5am_ny_candle_range(df_4h: pd.DataFrame) -> Optional[dict]:
     if candidates.empty:
         return None
     last = candidates.iloc[-1]
-    return {"high": last["High"], "low": last["Low"], "time": candidates.index[-1]}
+    open_time = candidates.index[-1]
+    close_time = open_time + pd.Timedelta(hours=4)  # when this 4H candle finishes printing
+    return {"high": last["High"], "low": last["Low"], "time": open_time, "close_time": close_time}
 
 
 def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol: str) -> SetupState:
     """
     df_4h: 4H OHLC, used to find the 5AM NY candle range
     df_intraday: 5m or 15m OHLC used to detect the sweep/MSS and refine entry
+
+    Per the rule: mark the 5AM-9AM NY range, but only start looking for a
+    sweep/MSS entry AFTER that candle has finished printing (i.e. from 9AM
+    NY onward) - not while it's still forming.
     """
     candle = get_5am_ny_candle_range(df_4h)
     if candle is None:
@@ -422,7 +430,7 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
     range_high, range_low = candle["high"], candle["low"]
     state = SetupState("NY 5AM CRT", symbol, range_high, range_low, "5AM NY Candle")
 
-    session_start = candle["time"]
+    session_start = candle["close_time"]  # entries only hunted from candle CLOSE (~9AM NY), not open (5AM)
 
     # align timezone-awareness between session_start and df_intraday's index
     # before comparing, otherwise pandas raises on tz-naive vs tz-aware
@@ -439,7 +447,7 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
     intraday_after = df_intraday[df_intraday.index >= session_start_cmp]
     if len(intraday_after) < 5:
         state.status = "waiting"
-        state.notes = "5AM NY candle marked - waiting for price action after it."
+        state.notes = "5AM NY candle range marked (5-9AM NY) - waiting for the candle to finish printing before looking for entries."
         return state
 
     intraday_after = intraday_after.reset_index()
