@@ -1,9 +1,9 @@
 """
 daily_dashboard.py
 
-Run this every morning (or on a schedule). It pulls fresh data for
-Gold, NAS100, EURUSD, USDJPY, runs both strategy setups (Daily PDH/PDL
-and NY 5AM CRT), and renders a single mobile-friendly HTML page showing
+Run this every morning (or on a schedule). It pulls fresh data for all
+configured instruments, runs both strategy setups (Daily PDH/PDL and
+NY 5AM CRT), and renders a single mobile-friendly HTML page showing
 exactly where each instrument stands: waiting / swept / MSS confirmed /
 entry+SL+TP1+TP2 levels + confluence tags.
 
@@ -11,10 +11,11 @@ Usage:
     python daily_dashboard.py
 
 Output:
-    /mnt/user-data/outputs/dashboard.html   <- open this on your phone
+    index.html   <- open this on your phone
 """
 
 import datetime
+import traceback
 import pandas as pd
 import yfinance as yf
 
@@ -25,6 +26,12 @@ SYMBOLS = {
     "NAS100": "^NDX",
     "EURUSD": "EURUSD=X",
     "USDJPY": "JPY=X",
+    "GBPUSD": "GBPUSD=X",
+    "BTCUSD": "BTC-USD",
+    "AUDUSD": "AUDUSD=X",
+    "US30":   "^DJI",
+    "USDCAD": "USDCAD=X",
+    "NZDUSD": "NZDUSD=X",
 }
 
 # Deep link straight to the workflow run page - update this if your username/repo differ
@@ -46,10 +53,32 @@ STATUS_LABELS = {
 
 
 def fetch(symbol, interval, period):
-    df = yf.download(symbol, interval=interval, period=period, progress=False, auto_adjust=True)
+    """Pulls OHLC data for one symbol. Returns an empty DataFrame (not an
+    exception) if yfinance gives back nothing usable, so callers can check
+    .empty rather than needing a try/except at every call site."""
+    try:
+        df = yf.download(symbol, interval=interval, period=period, progress=False, auto_adjust=True)
+    except Exception:
+        return pd.DataFrame()
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [c[0] for c in df.columns]
+
+    required = {"Open", "High", "Low", "Close"}
+    if not required.issubset(set(df.columns)):
+        return pd.DataFrame()
+
     return df.dropna(subset=["Open", "High", "Low", "Close"])
+
+
+def safe_setup_state(setup_name, symbol, note):
+    """Builds a clearly-labeled error/placeholder state so a single bad
+    symbol never takes down the whole dashboard build."""
+    return SetupState(setup_name, symbol, float("nan"), float("nan"), "N/A",
+                       status="no_data", notes=note)
 
 
 def analyze_symbol(name, ticker):
@@ -57,62 +86,86 @@ def analyze_symbol(name, ticker):
     try:
         df_daily = fetch(ticker, "1d", "30d")
         df_15m = fetch(ticker, "15m", "60d")
-        df_4h = fetch(ticker, "1h", "60d")  # resample to 4H below
-        if not df_4h.empty:
-            df_4h = df_4h.resample("4h").agg(
-                {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
-            ).dropna()
+        df_4h_raw = fetch(ticker, "1h", "60d")  # resampled to 4H below
 
+        df_4h = pd.DataFrame()
+        if not df_4h_raw.empty:
+            try:
+                df_4h = df_4h_raw.resample("4h").agg(
+                    {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
+                ).dropna()
+            except Exception:
+                df_4h = pd.DataFrame()
+
+        # Setup A - Daily PDH/PDL
         if not df_daily.empty and not df_15m.empty:
-            results["setup_a"] = analyze_daily_setup(df_daily, df_15m, name)
+            try:
+                results["setup_a"] = analyze_daily_setup(df_daily, df_15m, name)
+            except Exception as e:
+                results["setup_a"] = safe_setup_state("Daily PDH/PDL", name, f"Analysis error: {e}")
         else:
-            results["setup_a"] = SetupState("Daily PDH/PDL", name, float("nan"), float("nan"), "Previous Day", status="no_data")
+            results["setup_a"] = safe_setup_state("Daily PDH/PDL", name, "No data available for this symbol yet.")
 
+        # Setup B - NY 5AM CRT
         if not df_4h.empty and not df_15m.empty:
-            results["setup_b"] = analyze_ny_crt_setup(df_4h, df_15m, name)
+            try:
+                results["setup_b"] = analyze_ny_crt_setup(df_4h, df_15m, name)
+            except Exception as e:
+                results["setup_b"] = safe_setup_state("NY 5AM CRT", name, f"Analysis error: {e}")
         else:
-            results["setup_b"] = SetupState("NY 5AM CRT", name, float("nan"), float("nan"), "5AM NY Candle", status="no_data")
+            results["setup_b"] = safe_setup_state("NY 5AM CRT", name, "No data available for this symbol yet.")
 
     except Exception as e:
-        err_state = SetupState("Error", name, float("nan"), float("nan"), "N/A", status="no_data", notes=str(e))
+        err_state = safe_setup_state("Error", name, f"Unexpected error: {e}")
         results["setup_a"] = err_state
         results["setup_b"] = err_state
+
     return results
+
+
+def fmt(value, decimals=4):
+    """Safely formats a possibly-None numeric value for display."""
+    if value is None:
+        return "—"
+    try:
+        return f"{value:.{decimals}f}"
+    except (TypeError, ValueError):
+        return "—"
 
 
 def render_setup_card(state: SetupState) -> str:
     color = STATUS_COLORS.get(state.status, "#555")
-    label = STATUS_LABELS.get(state.status, state.status.upper())
+    label = STATUS_LABELS.get(state.status, (state.status or "unknown").upper())
 
     levels_html = ""
     if state.status == "mss_confirmed":
         conf = ", ".join(state.confluence) if state.confluence else "—"
         dir_color = "#1e9e5a" if state.direction == "long" else "#c0392b"
-        tp1_str = f"{state.tp1:.4f}" if state.tp1 is not None else "— (no liquidity found yet)"
-        tp2_str = f"{state.tp2:.4f}" if state.tp2 is not None else "—"
+        direction_label = state.direction.upper() if state.direction else "—"
         levels_html = f"""
         <div class="levels">
-          <div class="dir" style="color:{dir_color}">{state.direction.upper() if state.direction else ''}</div>
-          <div class="row"><span>Entry</span><b>{state.entry_price:.4f}</b></div>
-          <div class="row"><span>Stop Loss</span><b>{state.stop_loss:.4f}</b></div>
-          <div class="row"><span>TP1 (→ move SL to BE)</span><b>{tp1_str}</b></div>
-          <div class="row"><span>TP2</span><b>{tp2_str}</b></div>
+          <div class="dir" style="color:{dir_color}">{direction_label}</div>
+          <div class="row"><span>Entry</span><b>{fmt(state.entry_price)}</b></div>
+          <div class="row"><span>Stop Loss</span><b>{fmt(state.stop_loss)}</b></div>
+          <div class="row"><span>TP1 (→ move SL to BE)</span><b>{fmt(state.tp1)}</b></div>
+          <div class="row"><span>TP2</span><b>{fmt(state.tp2)}</b></div>
           <div class="row"><span>Confluence</span><b>{conf}</b></div>
         </div>
         """
     elif state.status == "sweep_only":
         side = "HIGH" if state.sweep_side == "high" else "LOW"
-        sweep_price_str = f"{state.sweep_price:.4f}" if state.sweep_price is not None else "—"
         levels_html = f"""
         <div class="levels">
           <div class="row"><span>Swept</span><b>{state.range_label} {side}</b></div>
-          <div class="row"><span>Sweep price</span><b>{sweep_price_str}</b></div>
+          <div class="row"><span>Sweep price</span><b>{fmt(state.sweep_price)}</b></div>
         </div>
         """
 
     range_html = ""
-    if state.range_high == state.range_high:  # not NaN
-        range_html = f'<div class="range">{state.range_label}: {state.range_low:.4f} — {state.range_high:.4f}</div>'
+    if state.range_high is not None and state.range_high == state.range_high:  # not NaN
+        range_html = f'<div class="range">{state.range_label}: {fmt(state.range_low)} — {fmt(state.range_high)}</div>'
+
+    notes = state.notes or ""
 
     return f"""
     <div class="setup-card">
@@ -122,7 +175,7 @@ def render_setup_card(state: SetupState) -> str:
       </div>
       {range_html}
       {levels_html}
-      <div class="notes">{state.notes}</div>
+      <div class="notes">{notes}</div>
     </div>
     """
 
@@ -141,7 +194,11 @@ def build_dashboard():
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     sections = []
     for name, ticker in SYMBOLS.items():
-        results = analyze_symbol(name, ticker)
+        try:
+            results = analyze_symbol(name, ticker)
+        except Exception as e:
+            err_state = safe_setup_state("Error", name, f"Fatal error analyzing {name}: {e}")
+            results = {"setup_a": err_state, "setup_b": err_state}
         sections.append(render_instrument_section(name, results))
 
     html = f"""<!DOCTYPE html>
@@ -220,8 +277,23 @@ def build_dashboard():
 
 
 if __name__ == "__main__":
-    html = build_dashboard()
     out_path = "index.html"
-    with open(out_path, "w") as f:
-        f.write(html)
-    print(f"Dashboard written to {out_path}")
+    try:
+        html = build_dashboard()
+        with open(out_path, "w") as f:
+            f.write(html)
+        print(f"Dashboard written to {out_path}")
+    except Exception as e:
+        print("FATAL ERROR building dashboard:")
+        traceback.print_exc()
+        fallback_html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard Error</title></head>
+<body style="background:#0d0d0f;color:#eee;font-family:sans-serif;padding:20px;">
+<h1>Dashboard build failed</h1>
+<p>{str(e)}</p>
+<pre style="white-space:pre-wrap;font-size:11px;color:#999;">{traceback.format_exc()}</pre>
+</body></html>"""
+        with open(out_path, "w") as f:
+            f.write(fallback_html)
+        raise
