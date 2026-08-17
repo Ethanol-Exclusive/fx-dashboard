@@ -280,6 +280,17 @@ def nearest_unswept_liquidity(
             candidates.append(LiquidityLevel(session_low, "session_low"))
         candidates.sort(key=lambda c: c.price, reverse=True)
 
+    # De-duplicate levels that are effectively the same price - overlapping
+    # swing-detection windows can flag several adjacent candles as separate
+    # "swing highs/lows" when they're really the same liquidity level, which
+    # previously caused TP1 and TP2 to show identical numbers.
+    deduped: List[LiquidityLevel] = []
+    epsilon = max(abs(current_price) * 0.0001, 1e-6)  # ~0.01% of price, scales across instruments
+    for c in candidates:
+        if not any(abs(c.price - d.price) < epsilon for d in deduped):
+            deduped.append(c)
+    candidates = deduped
+
     return candidates
 
 
