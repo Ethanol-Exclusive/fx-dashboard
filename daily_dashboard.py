@@ -15,9 +15,12 @@ Output:
 """
 
 import datetime
+import json
+import os
 import traceback
 import pandas as pd
 import yfinance as yf
+import requests
 
 from strategy_v2 import analyze_daily_setup, analyze_ny_crt_setup, SetupState
 
@@ -50,6 +53,75 @@ STATUS_LABELS = {
     "mss_confirmed": "SIGNAL LIVE",
     "no_data": "NO DATA",
 }
+
+STATE_FILE = "last_signals.json"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+
+def load_previous_signals():
+    """Loads the set of signal keys we've already notified about, so we
+    don't spam the same confirmed signal every time the workflow re-runs."""
+    if not os.path.exists(STATE_FILE):
+        return {}
+    try:
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_signals(signals):
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(signals, f, indent=2)
+    except Exception as e:
+        print(f"Warning: could not save {STATE_FILE}: {e}")
+
+
+def signal_key(symbol, setup_name, state):
+    """A unique fingerprint for a specific confirmed signal - includes entry
+    price so that if the SAME setup reconfirms at a genuinely new level
+    later, it's treated as new, but re-running the workflow on an unchanged
+    signal won't re-notify."""
+    entry = f"{state.entry_price:.5f}" if state.entry_price is not None else "na"
+    return f"{symbol}|{setup_name}|{state.direction}|{entry}"
+
+
+def send_telegram_alert(message):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram not configured (missing TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID secrets) - skipping alert.")
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        resp = requests.post(url, data={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "Markdown",
+        }, timeout=10)
+        if resp.status_code != 200:
+            print(f"Telegram send failed: {resp.status_code} {resp.text}")
+    except Exception as e:
+        print(f"Telegram send error: {e}")
+
+
+def build_alert_message(symbol, state: SetupState) -> str:
+    conf = ", ".join(state.confluence) if state.confluence else "none"
+    direction_word = "LONG" if state.direction == "long" else "SHORT"
+    emoji = "🟢" if state.direction == "long" else "🔴"
+
+    tp1_line = f"TP1 (→ BE): `{state.tp1:.5f}`\n" if state.tp1 is not None else "TP1: no liquidity found yet\n"
+    tp2_line = f"TP2: `{state.tp2:.5f}`\n" if state.tp2 is not None else ""
+
+    return (
+        f"{emoji} *{direction_word} — {symbol}*\n"
+        f"_{state.setup_name}_\n\n"
+        f"Entry: `{state.entry_price:.5f}`\n"
+        f"Stop Loss: `{state.stop_loss:.5f}`\n"
+        f"{tp1_line}"
+        f"{tp2_line}"
+        f"Confluence: {conf}"
+    )
 
 
 def fetch(symbol, interval, period):
@@ -193,6 +265,9 @@ def render_instrument_section(name, results) -> str:
 def build_dashboard():
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     sections = []
+    previous_signals = load_previous_signals()
+    current_signals = {}
+
     for name, ticker in SYMBOLS.items():
         try:
             results = analyze_symbol(name, ticker)
@@ -200,6 +275,18 @@ def build_dashboard():
             err_state = safe_setup_state("Error", name, f"Fatal error analyzing {name}: {e}")
             results = {"setup_a": err_state, "setup_b": err_state}
         sections.append(render_instrument_section(name, results))
+
+        # check both setups for newly-confirmed signals worth notifying about
+        for setup_key in ("setup_a", "setup_b"):
+            state = results.get(setup_key)
+            if state and state.status == "mss_confirmed" and state.entry_price is not None:
+                key = signal_key(name, state.setup_name, state)
+                current_signals[key] = True
+                if key not in previous_signals:
+                    print(f"New signal detected: {key} - sending Telegram alert")
+                    send_telegram_alert(build_alert_message(name, state))
+
+    save_signals(current_signals)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
