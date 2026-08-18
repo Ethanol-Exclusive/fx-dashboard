@@ -1,42 +1,464 @@
-name: Update Trading Dashboard
+"""
+daily_dashboard.py
 
-on:
-  schedule:
-    # Runs every 30 minutes, 24/7. Set conservatively to stay within
-    # Twelve Data's free-tier rate limits (10 symbols x 3 calls = 30
-    # API calls per run) - tighten to */15 later if your plan supports it.
-    - cron: "*/30 * * * *"
-  workflow_dispatch: {}   # lets you trigger it manually from the Actions tab too
+Run this every morning (or on a schedule). It pulls fresh data for all
+configured instruments, runs both strategy setups (Daily PDH/PDL and
+NY 5AM CRT), and renders a single mobile-friendly HTML page showing
+exactly where each instrument stands: waiting / swept / MSS confirmed /
+entry+SL+TP1+TP2 levels + confluence tags.
 
-permissions:
-  contents: write
+Usage:
+    python daily_dashboard.py
 
-jobs:
-  build-dashboard:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repo
-        uses: actions/checkout@v4
+Output:
+    index.html   <- open this on your phone
+"""
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+import datetime
+import json
+import os
+import traceback
+import pandas as pd
+import requests
 
-      - name: Install dependencies
-        run: pip install pandas numpy pytz requests
+from strategy_v2 import analyze_daily_setup, analyze_ny_crt_setup, SetupState, NY_TZ
 
-      - name: Generate dashboard
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
-        run: python daily_dashboard.py
+# Twelve Data instrument identifiers. Using Twelve Data instead of OANDA
+# because OANDA doesn't accept new accounts from all countries - Twelve
+# Data's free tier has no such restriction and gives real spot-style pricing.
+SYMBOLS = {
+    "GOLD":   "XAU/USD",
+    "NAS100": "NDX",
+    "EURUSD": "EUR/USD",
+    "USDJPY": "USD/JPY",
+    "GBPUSD": "GBP/USD",
+    "BTCUSD": "BTC/USD",
+    "AUDUSD": "AUD/USD",
+    "US30":   "DJI",
+    "USDCAD": "USD/CAD",
+    "NZDUSD": "NZD/USD",
+}
 
-      - name: Commit and push updated dashboard
-        run: |
-          git config user.name "dashboard-bot"
-          git config user.email "dashboard-bot@users.noreply.github.com"
-          git add index.html last_signals.json
-          git diff --quiet && git diff --staged --quiet || git commit -m "Auto-update dashboard $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          git push
+TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
+TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
+
+# Most instruments' CRT candle opens at 5AM NY. Index CFDs like NAS100/US30
+# often run on a session grid offset by an hour - override those here.
+CRT_HOUR_OVERRIDES = {
+    "NAS100": 6,
+    "US30": 6,
+}
+
+# Deep link straight to the workflow run page - update this if your username/repo differ
+REPO_ACTIONS_URL = "https://github.com/Ethanol-Exclusive/fx-dashboard/actions/workflows/update-dashboard.yml"
+
+STATUS_COLORS = {
+    "waiting": "#555",
+    "sweep_only": "#c9a227",
+    "mss_confirmed": "#1e9e5a",
+    "no_data": "#999",
+}
+
+STATUS_LABELS = {
+    "waiting": "WAITING",
+    "sweep_only": "SWEPT — awaiting MSS",
+    "mss_confirmed": "SIGNAL LIVE",
+    "no_data": "NO DATA",
+}
+
+STATE_FILE = "last_signals.json"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+
+def load_previous_signals():
+    """Loads the set of signal keys we've already notified about, so we
+    don't spam the same confirmed signal every time the workflow re-runs."""
+    if not os.path.exists(STATE_FILE):
+        return {}
+    try:
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_signals(signals):
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(signals, f, indent=2)
+    except Exception as e:
+        print(f"Warning: could not save {STATE_FILE}: {e}")
+
+
+def signal_key(symbol, setup_name, state):
+    """A unique fingerprint for a specific confirmed signal - includes entry
+    price so that if the SAME setup reconfirms at a genuinely new level
+    later, it's treated as new, but re-running the workflow on an unchanged
+    signal won't re-notify."""
+    entry = f"{state.entry_price:.5f}" if state.entry_price is not None else "na"
+    return f"{symbol}|{setup_name}|{state.direction}|{entry}"
+
+
+def send_telegram_alert(message):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram not configured (missing TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID secrets) - skipping alert.")
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        resp = requests.post(url, data={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "Markdown",
+        }, timeout=10)
+        if resp.status_code != 200:
+            print(f"Telegram send failed: {resp.status_code} {resp.text}")
+    except Exception as e:
+        print(f"Telegram send error: {e}")
+
+
+def build_alert_message(symbol, state: SetupState) -> str:
+    conf = ", ".join(state.confluence) if state.confluence else "none"
+    direction_word = "LONG" if state.direction == "long" else "SHORT"
+    emoji = "🟢" if state.direction == "long" else "🔴"
+
+    tp1_line = f"TP1 (→ BE): `{state.tp1:.5f}`\n" if state.tp1 is not None else "TP1: no liquidity found yet\n"
+    tp2_line = f"TP2: `{state.tp2:.5f}`\n" if state.tp2 is not None else ""
+
+    return (
+        f"{emoji} *{direction_word} — {symbol}*\n"
+        f"_{state.setup_name}_\n\n"
+        f"Entry: `{state.entry_price:.5f}`\n"
+        f"Stop Loss: `{state.stop_loss:.5f}`\n"
+        f"{tp1_line}"
+        f"{tp2_line}"
+        f"Confluence: {conf}"
+    )
+
+
+def fetch(symbol, interval, outputsize):
+    """Pulls OHLC candles for one instrument from Twelve Data's API. Returns
+    an empty DataFrame (not an exception) on any failure, so callers can
+    check .empty rather than needing a try/except at every call site.
+
+    interval: Twelve Data codes - "1day", "1h", "15min"
+    outputsize: number of most-recent candles to pull (free tier caps apply)
+    """
+    if not TWELVE_DATA_API_KEY:
+        print("TWELVE_DATA_API_KEY not set - cannot fetch data.")
+        return pd.DataFrame()
+
+    try:
+        url = f"{TWELVE_DATA_BASE_URL}/time_series"
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "outputsize": outputsize,
+            "apikey": TWELVE_DATA_API_KEY,
+            "timezone": "UTC",
+        }
+        resp = requests.get(url, params=params, timeout=15)
+        if resp.status_code != 200:
+            print(f"Twelve Data fetch failed for {symbol} ({interval}): {resp.status_code} {resp.text[:200]}")
+            return pd.DataFrame()
+        data = resp.json()
+    except Exception as e:
+        print(f"Twelve Data fetch error for {symbol} ({interval}): {e}")
+        return pd.DataFrame()
+
+    if data.get("status") == "error":
+        print(f"Twelve Data API error for {symbol} ({interval}): {data.get('message', 'unknown error')}")
+        return pd.DataFrame()
+
+    values = data.get("values", [])
+    if not values:
+        return pd.DataFrame()
+
+    rows = []
+    for v in values:
+        try:
+            t = pd.Timestamp(v["datetime"])
+            if t.tzinfo is None:
+                t = t.tz_localize("UTC")
+            else:
+                t = t.tz_convert("UTC")
+            rows.append({
+                "time": t,
+                "Open": float(v["open"]), "High": float(v["high"]),
+                "Low": float(v["low"]), "Close": float(v["close"]),
+            })
+        except (KeyError, ValueError, TypeError):
+            continue  # skip any malformed candle rather than failing the whole fetch
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows).set_index("time").sort_index()  # Twelve Data returns newest-first
+    return df
+
+
+def safe_setup_state(setup_name, symbol, note):
+    """Builds a clearly-labeled error/placeholder state so a single bad
+    symbol never takes down the whole dashboard build."""
+    return SetupState(setup_name, symbol, float("nan"), float("nan"), "N/A",
+                       status="no_data", notes=note)
+
+
+def build_4h_anchored_to_hour(df_1h: pd.DataFrame, target_hour: int) -> pd.DataFrame:
+    """
+    Resamples 1H OHLC data into 4H candles whose bin edges are anchored to
+    target_hour in NEW YORK time (e.g. bins at 5,9,13,17,21,1 AM NY for
+    target_hour=5, or 6,10,14,18,22,2 AM NY for target_hour=6).
+
+    A plain df.resample("4h") uses whatever boundary pandas defaults to
+    based on the data's own timezone/origin, which only coincidentally
+    lines up with 5AM NY for some instruments and not others (e.g. index
+    CFDs like NAS100/US30 that run on a session grid offset by an hour).
+    This anchors explicitly so the right instrument gets the right candle.
+    """
+    if df_1h.empty:
+        return pd.DataFrame()
+
+    idx = df_1h.index
+    if idx.tz is None:
+        df_ny = df_1h.copy()
+        df_ny.index = idx.tz_localize("UTC").tz_convert(NY_TZ)
+    else:
+        df_ny = df_1h.copy()
+        df_ny.index = idx.tz_convert(NY_TZ)
+
+    try:
+        resampled = df_ny.resample("4h", offset=f"{target_hour}h", origin="start_day").agg(
+            {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
+        ).dropna()
+    except Exception:
+        return pd.DataFrame()
+
+    return resampled
+
+
+def analyze_symbol(name, ticker):
+    results = {}
+    try:
+        df_daily = fetch(ticker, "1day", 30)
+        df_15m = fetch(ticker, "15min", 2000)   # ~20 days of 15m candles
+        df_1h = fetch(ticker, "1h", 500)        # ~20 days of 1H candles, resampled to 4H below
+
+        target_hour = CRT_HOUR_OVERRIDES.get(name, 5)
+        df_4h = build_4h_anchored_to_hour(df_1h, target_hour)
+
+        # Setup A - Daily PDH/PDL
+        if not df_daily.empty and not df_15m.empty:
+            try:
+                results["setup_a"] = analyze_daily_setup(df_daily, df_15m, name)
+            except Exception as e:
+                results["setup_a"] = safe_setup_state("Daily PDH/PDL", name, f"Analysis error: {e}")
+        else:
+            results["setup_a"] = safe_setup_state("Daily PDH/PDL", name, "No data available for this symbol yet.")
+
+        # Setup B - NY 5AM CRT
+        if not df_4h.empty and not df_15m.empty:
+            try:
+                results["setup_b"] = analyze_ny_crt_setup(df_4h, df_15m, name, target_hour=CRT_HOUR_OVERRIDES.get(name, 5))
+            except Exception as e:
+                results["setup_b"] = safe_setup_state("NY 5AM CRT", name, f"Analysis error: {e}")
+        else:
+            results["setup_b"] = safe_setup_state("NY 5AM CRT", name, "No data available for this symbol yet.")
+
+    except Exception as e:
+        err_state = safe_setup_state("Error", name, f"Unexpected error: {e}")
+        results["setup_a"] = err_state
+        results["setup_b"] = err_state
+
+    return results
+
+
+def fmt(value, decimals=4):
+    """Safely formats a possibly-None numeric value for display."""
+    if value is None:
+        return "—"
+    try:
+        return f"{value:.{decimals}f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def render_setup_card(state: SetupState) -> str:
+    color = STATUS_COLORS.get(state.status, "#555")
+    label = STATUS_LABELS.get(state.status, (state.status or "unknown").upper())
+
+    levels_html = ""
+    if state.status == "mss_confirmed":
+        conf = ", ".join(state.confluence) if state.confluence else "—"
+        dir_color = "#1e9e5a" if state.direction == "long" else "#c0392b"
+        direction_label = state.direction.upper() if state.direction else "—"
+        levels_html = f"""
+        <div class="levels">
+          <div class="dir" style="color:{dir_color}">{direction_label}</div>
+          <div class="row"><span>Entry</span><b>{fmt(state.entry_price)}</b></div>
+          <div class="row"><span>Stop Loss</span><b>{fmt(state.stop_loss)}</b></div>
+          <div class="row"><span>TP1 (→ move SL to BE)</span><b>{fmt(state.tp1)}</b></div>
+          <div class="row"><span>TP2</span><b>{fmt(state.tp2)}</b></div>
+          <div class="row"><span>Confluence</span><b>{conf}</b></div>
+        </div>
+        """
+    elif state.status == "sweep_only":
+        side = "HIGH" if state.sweep_side == "high" else "LOW"
+        levels_html = f"""
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>{state.range_label} {side}</b></div>
+          <div class="row"><span>Sweep price</span><b>{fmt(state.sweep_price)}</b></div>
+        </div>
+        """
+
+    range_html = ""
+    if state.range_high is not None and state.range_high == state.range_high:  # not NaN
+        range_html = f'<div class="range">{state.range_label}: {fmt(state.range_low)} — {fmt(state.range_high)}</div>'
+
+    notes = state.notes or ""
+
+    return f"""
+    <div class="setup-card">
+      <div class="setup-header">
+        <span class="setup-name">{state.setup_name}</span>
+        <span class="status-pill" style="background:{color}">{label}</span>
+      </div>
+      {range_html}
+      {levels_html}
+      <div class="notes">{notes}</div>
+    </div>
+    """
+
+
+def render_instrument_section(name, results) -> str:
+    return f"""
+    <div class="instrument">
+      <h2>{name}</h2>
+      {render_setup_card(results['setup_a'])}
+      {render_setup_card(results['setup_b'])}
+    </div>
+    """
+
+
+def build_dashboard():
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    sections = []
+    previous_signals = load_previous_signals()
+    current_signals = {}
+
+    for name, ticker in SYMBOLS.items():
+        try:
+            results = analyze_symbol(name, ticker)
+        except Exception as e:
+            err_state = safe_setup_state("Error", name, f"Fatal error analyzing {name}: {e}")
+            results = {"setup_a": err_state, "setup_b": err_state}
+        sections.append(render_instrument_section(name, results))
+
+        # check both setups for newly-confirmed signals worth notifying about
+        for setup_key in ("setup_a", "setup_b"):
+            state = results.get(setup_key)
+            if state and state.status == "mss_confirmed" and state.entry_price is not None:
+                key = signal_key(name, state.setup_name, state)
+                current_signals[key] = True
+                if key not in previous_signals:
+                    print(f"New signal detected: {key} - sending Telegram alert")
+                    send_telegram_alert(build_alert_message(name, state))
+
+    save_signals(current_signals)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Exclusive FX — Daily Dashboard</title>
+<style>
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0; padding: 16px;
+    background: #0d0d0f; color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }}
+  header {{ margin-bottom: 20px; }}
+  header h1 {{ font-size: 20px; margin: 0 0 4px 0; }}
+  header .ts {{ font-size: 12px; color: #888; }}
+  .instrument {{ margin-bottom: 24px; }}
+  .instrument h2 {{
+    font-size: 16px; margin: 0 0 8px 0; color: #fff;
+    border-bottom: 1px solid #222; padding-bottom: 6px;
+  }}
+  .setup-card {{
+    background: #16161a; border-radius: 10px; padding: 12px 14px;
+    margin-bottom: 10px; border: 1px solid #232327;
+  }}
+  .setup-header {{
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 6px;
+  }}
+  .setup-name {{ font-size: 13px; color: #ccc; font-weight: 600; }}
+  .status-pill {{
+    font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 20px;
+    color: #fff; letter-spacing: 0.3px;
+  }}
+  .range {{ font-size: 11px; color: #888; margin-bottom: 6px; }}
+  .levels {{ background: #0f0f12; border-radius: 8px; padding: 8px 10px; margin: 6px 0; }}
+  .levels .dir {{ font-size: 12px; font-weight: 800; margin-bottom: 4px; letter-spacing: 0.5px; }}
+  .levels .row {{
+    display: flex; justify-content: space-between; font-size: 12px;
+    padding: 2px 0; color: #bbb;
+  }}
+  .levels .row b {{ color: #fff; }}
+  .notes {{ font-size: 11px; color: #777; margin-top: 6px; line-height: 1.4; }}
+  footer {{ font-size: 10px; color: #555; text-align: center; margin-top: 24px; padding-bottom: 20px; }}
+  .refresh-btn {{
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: #1a1a1f; border: 1px solid #2a2a30; color: #eee;
+    text-decoration: none; font-size: 13px; font-weight: 600;
+    padding: 12px 16px; border-radius: 10px; margin-top: 10px;
+  }}
+  .refresh-btn:active {{ background: #232328; }}
+  .refresh-note {{ font-size: 10px; color: #666; text-align: center; margin-top: 6px; line-height: 1.4; }}
+</style>
+</head>
+<body>
+<header>
+  <h1>Exclusive FX — Daily Setup Dashboard</h1>
+  <div class="ts">Updated {now}</div>
+  <a class="refresh-btn" href="{REPO_ACTIONS_URL}" target="_blank" rel="noopener">
+    ⟳ Refresh Analysis
+  </a>
+  <div class="refresh-note">Opens GitHub Actions — tap the green "Run workflow" button there, wait ~30s, then come back and reload this page.</div>
+</header>
+{''.join(sections)}
+<footer>
+  Setup A = Daily PDH/PDL sweep · Setup B = NY 5AM candle range (CRT)<br>
+  TP1 = nearest unswept liquidity → move SL to breakeven · TP2 = next liquidity beyond<br>
+  Not financial advice. Demo-test before live.
+</footer>
+</body>
+</html>
+"""
+    return html
+
+
+if __name__ == "__main__":
+    out_path = "index.html"
+    try:
+        html = build_dashboard()
+        with open(out_path, "w") as f:
+            f.write(html)
+        print(f"Dashboard written to {out_path}")
+    except Exception as e:
+        print("FATAL ERROR building dashboard:")
+        traceback.print_exc()
+        fallback_html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard Error</title></head>
+<body style="background:#0d0d0f;color:#eee;font-family:sans-serif;padding:20px;">
+<h1>Dashboard build failed</h1>
+<p>{str(e)}</p>
+<pre style="white-space:pre-wrap;font-size:11px;color:#999;">{traceback.format_exc()}</pre>
+</body></html>"""
+        with open(out_path, "w") as f:
+            f.write(fallback_html)
+        raise
