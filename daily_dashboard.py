@@ -22,7 +22,7 @@ import pandas as pd
 import yfinance as yf
 import requests
 
-from strategy_v2 import analyze_daily_setup, analyze_ny_crt_setup, SetupState
+from strategy_v2 import analyze_daily_setup, analyze_ny_crt_setup, SetupState, NY_TZ
 
 SYMBOLS = {
     "GOLD":   "GC=F",
@@ -35,6 +35,13 @@ SYMBOLS = {
     "US30":   "^DJI",
     "USDCAD": "USDCAD=X",
     "NZDUSD": "NZDUSD=X",
+}
+
+# Most instruments' CRT candle opens at 5AM NY. Index CFDs like NAS100/US30
+# often run on a session grid offset by an hour - override those here.
+CRT_HOUR_OVERRIDES = {
+    "NAS100": 6,
+    "US30": 6,
 }
 
 # Deep link straight to the workflow run page - update this if your username/repo differ
@@ -153,21 +160,48 @@ def safe_setup_state(setup_name, symbol, note):
                        status="no_data", notes=note)
 
 
+def build_4h_anchored_to_hour(df_1h: pd.DataFrame, target_hour: int) -> pd.DataFrame:
+    """
+    Resamples 1H OHLC data into 4H candles whose bin edges are anchored to
+    target_hour in NEW YORK time (e.g. bins at 5,9,13,17,21,1 AM NY for
+    target_hour=5, or 6,10,14,18,22,2 AM NY for target_hour=6).
+
+    A plain df.resample("4h") uses whatever boundary pandas defaults to
+    based on the data's own timezone/origin, which only coincidentally
+    lines up with 5AM NY for some instruments and not others (e.g. index
+    CFDs like NAS100/US30 that run on a session grid offset by an hour).
+    This anchors explicitly so the right instrument gets the right candle.
+    """
+    if df_1h.empty:
+        return pd.DataFrame()
+
+    idx = df_1h.index
+    if idx.tz is None:
+        df_ny = df_1h.copy()
+        df_ny.index = idx.tz_localize("UTC").tz_convert(NY_TZ)
+    else:
+        df_ny = df_1h.copy()
+        df_ny.index = idx.tz_convert(NY_TZ)
+
+    try:
+        resampled = df_ny.resample("4h", offset=f"{target_hour}h", origin="start_day").agg(
+            {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
+        ).dropna()
+    except Exception:
+        return pd.DataFrame()
+
+    return resampled
+
+
 def analyze_symbol(name, ticker):
     results = {}
     try:
         df_daily = fetch(ticker, "1d", "30d")
         df_15m = fetch(ticker, "15m", "60d")
-        df_4h_raw = fetch(ticker, "1h", "60d")  # resampled to 4H below
+        df_4h_raw = fetch(ticker, "1h", "60d")  # resampled to 4H below, anchored per-instrument
 
-        df_4h = pd.DataFrame()
-        if not df_4h_raw.empty:
-            try:
-                df_4h = df_4h_raw.resample("4h").agg(
-                    {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
-                ).dropna()
-            except Exception:
-                df_4h = pd.DataFrame()
+        target_hour = CRT_HOUR_OVERRIDES.get(name, 5)
+        df_4h = build_4h_anchored_to_hour(df_4h_raw, target_hour)
 
         # Setup A - Daily PDH/PDL
         if not df_daily.empty and not df_15m.empty:
@@ -181,7 +215,7 @@ def analyze_symbol(name, ticker):
         # Setup B - NY 5AM CRT
         if not df_4h.empty and not df_15m.empty:
             try:
-                results["setup_b"] = analyze_ny_crt_setup(df_4h, df_15m, name)
+                results["setup_b"] = analyze_ny_crt_setup(df_4h, df_15m, name, target_hour=CRT_HOUR_OVERRIDES.get(name, 5))
             except Exception as e:
                 results["setup_b"] = safe_setup_state("NY 5AM CRT", name, f"Analysis error: {e}")
         else:
