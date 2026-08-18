@@ -439,8 +439,26 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
 
     Per the rule: mark the CRT range, but only start looking for a
     sweep/MSS entry AFTER that candle has finished printing (4 hours after
-    it opens) - not while it's still forming.
+    it opens), and only while it is CURRENTLY the NY trading session
+    (candle-close through 5PM NY) in real time - not just historically.
+    Outside the live NY session right now, this returns a clear
+    "outside session" status instead of surfacing a stale prior-day signal.
     """
+    session_open_hour = (target_hour + 4) % 24  # e.g. 9AM for a 5AM candle
+    session_close_hour = 17  # 5PM NY, standard forex session close
+
+    now_ny = pd.Timestamp.now(tz=NY_TZ)
+    current_hour = now_ny.hour + now_ny.minute / 60
+
+    in_live_session = session_open_hour <= current_hour < session_close_hour
+    if not in_live_session:
+        return SetupState(
+            "NY 5AM CRT", symbol, np.nan, np.nan, "5AM NY Candle",
+            status="waiting",
+            notes=f"Outside NY session right now ({now_ny.strftime('%H:%M')} NY) - "
+                  f"this setup only looks for entries between {session_open_hour}:00 and {session_close_hour}:00 NY."
+        )
+
     candle = get_5am_ny_candle_range(df_4h, target_hour=target_hour)
     if candle is None:
         return SetupState("NY 5AM CRT", symbol, np.nan, np.nan, "5AM NY Candle", status="no_data")
