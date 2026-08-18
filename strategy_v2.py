@@ -451,23 +451,37 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
 
     session_start = candle["close_time"]  # entries only hunted from candle CLOSE, not open
 
-    # align timezone-awareness between session_start and df_intraday's index
-    # before comparing, otherwise pandas raises on tz-naive vs tz-aware
+    # NY session end - entries should only be hunted for during the NY
+    # trading session, not the whole rest of the day/night. Using 5PM NY
+    # (17:00) as the standard NY forex session close.
+    session_end = session_start.normalize() + pd.Timedelta(hours=17)
+    if session_end <= session_start:
+        session_end += pd.Timedelta(days=1)
+
+    # align timezone-awareness between session_start/session_end and
+    # df_intraday's index before comparing, otherwise pandas raises on
+    # tz-naive vs tz-aware
     intraday_idx = df_intraday.index
     if intraday_idx.tz is None and session_start.tzinfo is not None:
         session_start_cmp = session_start.tz_localize(None)
+        session_end_cmp = session_end.tz_localize(None)
     elif intraday_idx.tz is not None and session_start.tzinfo is None:
         session_start_cmp = session_start.tz_localize(intraday_idx.tz)
+        session_end_cmp = session_end.tz_localize(intraday_idx.tz)
     elif intraday_idx.tz is not None and session_start.tzinfo is not None:
         session_start_cmp = session_start.tz_convert(intraday_idx.tz)
+        session_end_cmp = session_end.tz_convert(intraday_idx.tz)
     else:
         session_start_cmp = session_start
+        session_end_cmp = session_end
 
-    intraday_after = df_intraday[df_intraday.index >= session_start_cmp]
+    intraday_after = df_intraday[
+        (df_intraday.index >= session_start_cmp) & (df_intraday.index <= session_end_cmp)
+    ]
     if len(intraday_after) < 5:
         state.status = "waiting"
         close_hour = (target_hour + 4) % 24
-        state.notes = f"{target_hour}AM NY candle range marked ({target_hour}AM-{close_hour}AM NY) - waiting for the candle to finish printing before looking for entries."
+        state.notes = f"{target_hour}AM NY candle range marked ({target_hour}AM-{close_hour}AM NY) - waiting for the candle to finish printing / for NY session entries."
         return state
 
     intraday_after = intraday_after.reset_index()
