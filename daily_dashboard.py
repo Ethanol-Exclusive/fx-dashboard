@@ -19,23 +19,28 @@ import json
 import os
 import traceback
 import pandas as pd
-import yfinance as yf
 import requests
 
 from strategy_v2 import analyze_daily_setup, analyze_ny_crt_setup, SetupState, NY_TZ
 
+# Twelve Data instrument identifiers. Using Twelve Data instead of OANDA
+# because OANDA doesn't accept new accounts from all countries - Twelve
+# Data's free tier has no such restriction and gives real spot-style pricing.
 SYMBOLS = {
-    "GOLD":   "GC=F",
-    "NAS100": "^NDX",
-    "EURUSD": "EURUSD=X",
-    "USDJPY": "JPY=X",
-    "GBPUSD": "GBPUSD=X",
-    "BTCUSD": "BTC-USD",
-    "AUDUSD": "AUDUSD=X",
-    "US30":   "^DJI",
-    "USDCAD": "USDCAD=X",
-    "NZDUSD": "NZDUSD=X",
+    "GOLD":   "XAU/USD",
+    "NAS100": "NDX",
+    "EURUSD": "EUR/USD",
+    "USDJPY": "USD/JPY",
+    "GBPUSD": "GBP/USD",
+    "BTCUSD": "BTC/USD",
+    "AUDUSD": "AUD/USD",
+    "US30":   "DJI",
+    "USDCAD": "USD/CAD",
+    "NZDUSD": "NZD/USD",
 }
+
+TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
+TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
 
 # Most instruments' CRT candle opens at 5AM NY. Index CFDs like NAS100/US30
 # often run on a session grid offset by an hour - override those here.
@@ -131,26 +136,65 @@ def build_alert_message(symbol, state: SetupState) -> str:
     )
 
 
-def fetch(symbol, interval, period):
-    """Pulls OHLC data for one symbol. Returns an empty DataFrame (not an
-    exception) if yfinance gives back nothing usable, so callers can check
-    .empty rather than needing a try/except at every call site."""
+def fetch(symbol, interval, outputsize):
+    """Pulls OHLC candles for one instrument from Twelve Data's API. Returns
+    an empty DataFrame (not an exception) on any failure, so callers can
+    check .empty rather than needing a try/except at every call site.
+
+    interval: Twelve Data codes - "1day", "1h", "15min"
+    outputsize: number of most-recent candles to pull (free tier caps apply)
+    """
+    if not TWELVE_DATA_API_KEY:
+        print("TWELVE_DATA_API_KEY not set - cannot fetch data.")
+        return pd.DataFrame()
+
     try:
-        df = yf.download(symbol, interval=interval, period=period, progress=False, auto_adjust=True)
-    except Exception:
+        url = f"{TWELVE_DATA_BASE_URL}/time_series"
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "outputsize": outputsize,
+            "apikey": TWELVE_DATA_API_KEY,
+            "timezone": "UTC",
+        }
+        resp = requests.get(url, params=params, timeout=15)
+        if resp.status_code != 200:
+            print(f"Twelve Data fetch failed for {symbol} ({interval}): {resp.status_code} {resp.text[:200]}")
+            return pd.DataFrame()
+        data = resp.json()
+    except Exception as e:
+        print(f"Twelve Data fetch error for {symbol} ({interval}): {e}")
         return pd.DataFrame()
 
-    if df is None or df.empty:
+    if data.get("status") == "error":
+        print(f"Twelve Data API error for {symbol} ({interval}): {data.get('message', 'unknown error')}")
         return pd.DataFrame()
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [c[0] for c in df.columns]
-
-    required = {"Open", "High", "Low", "Close"}
-    if not required.issubset(set(df.columns)):
+    values = data.get("values", [])
+    if not values:
         return pd.DataFrame()
 
-    return df.dropna(subset=["Open", "High", "Low", "Close"])
+    rows = []
+    for v in values:
+        try:
+            t = pd.Timestamp(v["datetime"])
+            if t.tzinfo is None:
+                t = t.tz_localize("UTC")
+            else:
+                t = t.tz_convert("UTC")
+            rows.append({
+                "time": t,
+                "Open": float(v["open"]), "High": float(v["high"]),
+                "Low": float(v["low"]), "Close": float(v["close"]),
+            })
+        except (KeyError, ValueError, TypeError):
+            continue  # skip any malformed candle rather than failing the whole fetch
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows).set_index("time").sort_index()  # Twelve Data returns newest-first
+    return df
 
 
 def safe_setup_state(setup_name, symbol, note):
@@ -196,12 +240,12 @@ def build_4h_anchored_to_hour(df_1h: pd.DataFrame, target_hour: int) -> pd.DataF
 def analyze_symbol(name, ticker):
     results = {}
     try:
-        df_daily = fetch(ticker, "1d", "30d")
-        df_15m = fetch(ticker, "15m", "60d")
-        df_4h_raw = fetch(ticker, "1h", "60d")  # resampled to 4H below, anchored per-instrument
+        df_daily = fetch(ticker, "1day", 30)
+        df_15m = fetch(ticker, "15min", 2000)   # ~20 days of 15m candles
+        df_1h = fetch(ticker, "1h", 500)        # ~20 days of 1H candles, resampled to 4H below
 
         target_hour = CRT_HOUR_OVERRIDES.get(name, 5)
-        df_4h = build_4h_anchored_to_hour(df_4h_raw, target_hour)
+        df_4h = build_4h_anchored_to_hour(df_1h, target_hour)
 
         # Setup A - Daily PDH/PDL
         if not df_daily.empty and not df_15m.empty:
