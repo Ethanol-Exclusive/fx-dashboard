@@ -401,13 +401,15 @@ def analyze_daily_setup(df_daily: pd.DataFrame, df_intraday: pd.DataFrame, symbo
 # --------------------------------------------------------------------------- #
 # High-level: build a SetupState for "Setup B" (NY 5AM CRT)
 # --------------------------------------------------------------------------- #
-def get_5am_ny_candle_range(df_4h: pd.DataFrame) -> Optional[dict]:
+def get_5am_ny_candle_range(df_4h: pd.DataFrame, target_hour: int = 5) -> Optional[dict]:
     """
     df_4h: 4H OHLC with a tz-aware or naive DatetimeIndex (assumed UTC if naive).
-    Finds the most recent 4H candle whose NY-time hour is 5 (the 5AM NY candle),
-    and returns its high/low along with the time it FINISHES printing (its close,
-    ~9AM NY for a 4H candle starting at 5AM) - entries should only be hunted for
-    after that point, once the range is actually locked in.
+    Finds the most recent 4H candle whose NY-time hour matches target_hour
+    (defaults to 5AM for forex; some index CFDs like NAS100/US30 run on a
+    different session grid where the equivalent candle opens at 6AM instead -
+    pass target_hour=6 for those), and returns its high/low along with the
+    time it FINISHES printing (its close, target_hour+4 NY) - entries should
+    only be hunted for after that point, once the range is actually locked in.
     """
     idx = df_4h.index
     if idx.tz is None:
@@ -416,7 +418,9 @@ def get_5am_ny_candle_range(df_4h: pd.DataFrame) -> Optional[dict]:
         idx_ny = idx.tz_convert(NY_TZ)
 
     hours = idx_ny.hour
-    candidates = df_4h[(hours >= 4) & (hours <= 7)]  # 4H bucket containing 5AM NY
+    # widen the search window slightly around the target hour to tolerate
+    # minor candle-boundary drift between data sources
+    candidates = df_4h[(hours >= target_hour - 1) & (hours <= target_hour + 2)]
     if candidates.empty:
         return None
     last = candidates.iloc[-1]
@@ -425,23 +429,27 @@ def get_5am_ny_candle_range(df_4h: pd.DataFrame) -> Optional[dict]:
     return {"high": last["High"], "low": last["Low"], "time": open_time, "close_time": close_time}
 
 
-def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol: str) -> SetupState:
+def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol: str, target_hour: int = 5) -> SetupState:
     """
-    df_4h: 4H OHLC, used to find the 5AM NY candle range
+    df_4h: 4H OHLC, used to find the CRT candle range
     df_intraday: 5m or 15m OHLC used to detect the sweep/MSS and refine entry
+    target_hour: NY hour the CRT candle opens on. Defaults to 5AM (forex).
+        Some index CFDs (NAS100/US30) run on a session grid offset by an
+        hour - pass target_hour=6 for those instruments.
 
-    Per the rule: mark the 5AM-9AM NY range, but only start looking for a
-    sweep/MSS entry AFTER that candle has finished printing (i.e. from 9AM
-    NY onward) - not while it's still forming.
+    Per the rule: mark the CRT range, but only start looking for a
+    sweep/MSS entry AFTER that candle has finished printing (4 hours after
+    it opens) - not while it's still forming.
     """
-    candle = get_5am_ny_candle_range(df_4h)
+    candle = get_5am_ny_candle_range(df_4h, target_hour=target_hour)
     if candle is None:
         return SetupState("NY 5AM CRT", symbol, np.nan, np.nan, "5AM NY Candle", status="no_data")
 
     range_high, range_low = candle["high"], candle["low"]
-    state = SetupState("NY 5AM CRT", symbol, range_high, range_low, "5AM NY Candle")
+    label = f"{target_hour}AM NY Candle" if target_hour < 12 else f"{target_hour}AM NY Candle"
+    state = SetupState("NY 5AM CRT", symbol, range_high, range_low, label)
 
-    session_start = candle["close_time"]  # entries only hunted from candle CLOSE (~9AM NY), not open (5AM)
+    session_start = candle["close_time"]  # entries only hunted from candle CLOSE, not open
 
     # align timezone-awareness between session_start and df_intraday's index
     # before comparing, otherwise pandas raises on tz-naive vs tz-aware
@@ -458,7 +466,8 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
     intraday_after = df_intraday[df_intraday.index >= session_start_cmp]
     if len(intraday_after) < 5:
         state.status = "waiting"
-        state.notes = "5AM NY candle range marked (5-9AM NY) - waiting for the candle to finish printing before looking for entries."
+        close_hour = (target_hour + 4) % 24
+        state.notes = f"{target_hour}AM NY candle range marked ({target_hour}AM-{close_hour}AM NY) - waiting for the candle to finish printing before looking for entries."
         return state
 
     intraday_after = intraday_after.reset_index()
