@@ -35,13 +35,18 @@ SYMBOLS = {
     "US30":   "^DJI",
     "USDCAD": "USDCAD=X",
     "NZDUSD": "NZDUSD=X",
+    "GER30":  "^GDAXI",
 }
 
-# Most instruments' CRT candle opens at 5AM NY. Index CFDs like NAS100/US30
-# often run on a session grid offset by an hour - override those here.
-CRT_HOUR_OVERRIDES = {
-    "NAS100": 6,
-    "US30": 6,
+# Most instruments' CRT candle opens at 5AM NY. Indices (and BTCUSD) have
+# been observed to sometimes shift to a different hour depending on the day
+# (likely DST/session-calendar drift), so these list every hour worth
+# trying - the first one that yields a real (non-empty) result is used.
+CRT_HOUR_CANDIDATES = {
+    "NAS100": [5, 6],
+    "US30": [5, 6],
+    "GER30": [5, 6],
+    "BTCUSD": [4, 5],
 }
 
 # Deep link straight to the workflow run page - update this if your username/repo differ
@@ -201,9 +206,6 @@ def analyze_symbol(name, ticker):
         df_15m = fetch(ticker, "15m", "60d")
         df_1h = fetch(ticker, "1h", "60d")  # resampled to 4H below, anchored per-instrument
 
-        target_hour = CRT_HOUR_OVERRIDES.get(name, 5)
-        df_4h = build_4h_anchored_to_hour(df_1h, target_hour)
-
         # Setup A - Daily PDH/PDL
         if not df_daily.empty and not df_15m.empty:
             try:
@@ -213,14 +215,32 @@ def analyze_symbol(name, ticker):
         else:
             results["setup_a"] = safe_setup_state("Daily PDH/PDL", name, "No data available for this symbol yet.")
 
-        # Setup B - NY 5AM CRT
-        if not df_4h.empty and not df_15m.empty:
-            try:
-                results["setup_b"] = analyze_ny_crt_setup(df_4h, df_15m, name, target_hour=target_hour)
-            except Exception as e:
-                results["setup_b"] = safe_setup_state("NY 5AM CRT", name, f"Analysis error: {e}")
-        else:
-            results["setup_b"] = safe_setup_state("NY 5AM CRT", name, "No data available for this symbol yet.")
+        # Setup B - NY CRT. Try each candidate hour for this instrument
+        # (some instruments' CRT candle shifts hour day-to-day, e.g. DST
+        # drift) and use whichever candidate produces the best result.
+        candidate_hours = CRT_HOUR_CANDIDATES.get(name, [5])
+        status_priority = {"mss_confirmed": 3, "sweep_only": 2, "waiting": 1, "no_data": 0}
+        best_state = None
+
+        for hour in candidate_hours:
+            df_4h = build_4h_anchored_to_hour(df_1h, hour)
+            if df_4h.empty or df_15m.empty:
+                candidate_state = safe_setup_state("NY 5AM CRT", name, "No data available for this symbol yet.")
+            else:
+                try:
+                    candidate_state = analyze_ny_crt_setup(df_4h, df_15m, name, target_hour=hour)
+                except Exception as e:
+                    candidate_state = safe_setup_state("NY 5AM CRT", name, f"Analysis error: {e}")
+
+            if best_state is None:
+                best_state = candidate_state
+            else:
+                current_priority = status_priority.get(candidate_state.status, 0)
+                best_priority = status_priority.get(best_state.status, 0)
+                if current_priority > best_priority:
+                    best_state = candidate_state
+
+        results["setup_b"] = best_state
 
     except Exception as e:
         err_state = safe_setup_state("Error", name, f"Unexpected error: {e}")
