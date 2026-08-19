@@ -194,10 +194,13 @@ def detect_sweep_and_mss(
     highs, lows, closes = df["High"].values, df["Low"].values, df["Close"].values
     result = {
         "sweep_detected": False, "sweep_side": None, "sweep_index": None, "sweep_price": None,
-        "mss_confirmed": False, "mss_index": None, "direction": None,
+        "mss_confirmed": False, "mss_index": None, "direction": None, "invalidated": False,
     }
 
     for i in range(search_start, len(df)):
+        if result["invalidated"]:
+            break  # opposing liquidity already reached - this range is done for the session
+
         # Only count this as a NEW sweep if the previous candle hadn't already
         # poked past the level - otherwise a slow grind through the range
         # (e.g. a strong trending continuation) would re-trigger "sweep" on
@@ -205,20 +208,16 @@ def detect_sweep_and_mss(
         prev_high_ok = i == 0 or highs[i - 1] <= range_high
         prev_low_ok = i == 0 or lows[i - 1] >= range_low
 
-        # Once MSS has confirmed a direction, the original range has done its
-        # job - don't let a later retest of that same range flip the signal.
-        # Only a sweep of the OPPOSITE side (a genuine new setup) should override.
+        # Once MSS has confirmed a direction, we're targeting the OPPOSING
+        # liquidity (e.g. sweep of PDH -> short -> target PDL). Once price
+        # actually reaches that opposing level, the setup has played out -
+        # stop looking for anything further on this range, rather than
+        # starting a brand new setup in the other direction.
         if result["mss_confirmed"]:
-            if result["direction"] == "long" and lows[i] < range_low and closes[i] > range_low and prev_low_ok:
-                pass  # same-side retest, ignore
-            elif result["direction"] == "short" and highs[i] > range_high and closes[i] < range_high and prev_high_ok:
-                pass  # same-side retest, ignore
-            elif result["direction"] == "long" and highs[i] > range_high and closes[i] < range_high and prev_high_ok:
-                result.update(sweep_detected=True, sweep_side="high", sweep_index=i, sweep_price=highs[i],
-                               mss_confirmed=False, mss_index=None, direction=None)
-            elif result["direction"] == "short" and lows[i] < range_low and closes[i] > range_low and prev_low_ok:
-                result.update(sweep_detected=True, sweep_side="low", sweep_index=i, sweep_price=lows[i],
-                               mss_confirmed=False, mss_index=None, direction=None)
+            if result["direction"] == "long" and highs[i] >= range_high:
+                result["invalidated"] = True
+            elif result["direction"] == "short" and lows[i] <= range_low:
+                result["invalidated"] = True
         else:
             if lows[i] < range_low and closes[i] > range_low and prev_low_ok:
                 result.update(sweep_detected=True, sweep_side="low", sweep_index=i, sweep_price=lows[i],
