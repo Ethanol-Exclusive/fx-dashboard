@@ -119,7 +119,7 @@ def send_telegram_alert(message):
 
 def build_alert_message(symbol, state: SetupState) -> str:
     conf = ", ".join(state.confluence) if state.confluence else "none"
-    direction_word = "LONG" if state.direction == "long" else "SHORT"
+    direction_word = "BUY" if state.direction == "long" else "SELL"
     emoji = "🟢" if state.direction == "long" else "🔴"
 
     tp1_line = f"TP1 (→ BE): `{state.tp1:.5f}`\n" if state.tp1 is not None else "TP1: no liquidity found yet\n"
@@ -136,27 +136,98 @@ def build_alert_message(symbol, state: SetupState) -> str:
     )
 
 
-def fetch(symbol, interval, period):
-    """Pulls OHLC data for one symbol from Yahoo Finance. Returns an empty
-    DataFrame (not an exception) if yfinance gives back nothing usable, so
-    callers can check .empty rather than needing a try/except at every
-    call site."""
+# Secondary/fallback data source (Twelve Data) - only used when the primary
+# source (Yahoo Finance) returns nothing for a given fetch, e.g. a delayed
+# or missing candle causing a real setup to go undetected. Inactive unless
+# TWELVE_DATA_API_KEY is set, so this is a no-op until configured.
+TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
+TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
+TWELVE_DATA_SYMBOLS = {
+    "GOLD":   "XAU/USD",
+    "NAS100": "NDX",
+    "EURUSD": "EUR/USD",
+    "USDJPY": "USD/JPY",
+    "GBPUSD": "GBP/USD",
+    "BTCUSD": "BTC/USD",
+    "AUDUSD": "AUD/USD",
+    "US30":   "DJI",
+    "USDCAD": "USD/CAD",
+    "NZDUSD": "NZD/USD",
+    "GER30":  "DAX",
+}
+YFINANCE_TO_NAME = {v: k for k, v in SYMBOLS.items()}
+
+
+def fetch_twelvedata_fallback(name, interval, outputsize):
+    """Fallback fetch via Twelve Data, used only when Yahoo returns empty.
+    interval: Twelve Data codes - "1day", "1h", "15min" """
+    if not TWELVE_DATA_API_KEY:
+        return pd.DataFrame()
+    td_symbol = TWELVE_DATA_SYMBOLS.get(name)
+    if not td_symbol:
+        return pd.DataFrame()
     try:
-        df = yf.download(symbol, interval=interval, period=period, progress=False, auto_adjust=True)
+        resp = requests.get(f"{TWELVE_DATA_BASE_URL}/time_series", params={
+            "symbol": td_symbol, "interval": interval, "outputsize": outputsize,
+            "apikey": TWELVE_DATA_API_KEY, "timezone": "UTC",
+        }, timeout=15)
+        if resp.status_code != 200:
+            return pd.DataFrame()
+        data = resp.json()
     except Exception:
         return pd.DataFrame()
 
-    if df is None or df.empty:
+    if data.get("status") == "error":
         return pd.DataFrame()
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [c[0] for c in df.columns]
+    rows = []
+    for v in data.get("values", []):
+        try:
+            t = pd.Timestamp(v["datetime"])
+            t = t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+            rows.append({"time": t, "Open": float(v["open"]), "High": float(v["high"]),
+                         "Low": float(v["low"]), "Close": float(v["close"])})
+        except (KeyError, ValueError, TypeError):
+            continue
 
-    required = {"Open", "High", "Low", "Close"}
-    if not required.issubset(set(df.columns)):
+    if not rows:
         return pd.DataFrame()
+    return pd.DataFrame(rows).set_index("time").sort_index()
 
-    return df.dropna(subset=["Open", "High", "Low", "Close"])
+
+def fetch(symbol, interval, period):
+    """Pulls OHLC data for one symbol from Yahoo Finance (primary). If that
+    comes back empty, falls back to Twelve Data (if TWELVE_DATA_API_KEY is
+    configured) rather than silently missing a setup because of one
+    source's gap or delay. Returns an empty DataFrame (not an exception) if
+    both sources fail, so callers can check .empty rather than needing a
+    try/except at every call site."""
+    try:
+        df = yf.download(symbol, interval=interval, period=period, progress=False, auto_adjust=True)
+    except Exception:
+        df = None
+
+    if df is not None and not df.empty:
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0] for c in df.columns]
+        required = {"Open", "High", "Low", "Close"}
+        if required.issubset(set(df.columns)):
+            cleaned = df.dropna(subset=["Open", "High", "Low", "Close"])
+            if not cleaned.empty:
+                return cleaned
+
+    # Primary source came back empty/unusable - try the fallback
+    name = YFINANCE_TO_NAME.get(symbol)
+    if name and TWELVE_DATA_API_KEY:
+        td_interval = {"1d": "1day", "1h": "1h", "15m": "15min"}.get(interval)
+        td_outputsize = {"1d": 30, "1h": 500, "15m": 2000}.get(interval, 500)
+        if td_interval:
+            print(f"Yahoo Finance returned nothing for {symbol} ({interval}) - trying Twelve Data fallback.")
+            fallback_df = fetch_twelvedata_fallback(name, td_interval, td_outputsize)
+            if not fallback_df.empty:
+                return fallback_df
+
+    return pd.DataFrame()
 
 
 def safe_setup_state(setup_name, symbol, note):
@@ -268,7 +339,7 @@ def render_setup_card(state: SetupState) -> str:
     if state.status == "mss_confirmed":
         conf = ", ".join(state.confluence) if state.confluence else "—"
         dir_color = "#1e9e5a" if state.direction == "long" else "#c0392b"
-        direction_label = state.direction.upper() if state.direction else "—"
+        direction_label = "BUY" if state.direction == "long" else "SELL" if state.direction == "short" else "—"
         levels_html = f"""
         <div class="levels">
           <div class="dir" style="color:{dir_color}">{direction_label}</div>
@@ -357,7 +428,7 @@ def build_dashboard():
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }}
   header {{ margin-bottom: 20px; }}
-  header h1 {{ font-size: 20px; margin: 0 0 4px 0; }}
+  header h1 {{ font-size: 20px; margin: 0 0 4px 0; text-align: center; }}
   header .ts {{ font-size: 12px; color: #888; }}
   .instrument {{ margin-bottom: 24px; }}
   .instrument h2 {{
