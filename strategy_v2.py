@@ -293,6 +293,41 @@ def nearest_unswept_liquidity(
     return candidates
 
 
+def find_entry_after_range_reentry(
+    df: pd.DataFrame,
+    mss_index: int,
+    direction: Direction,
+    range_low: float,
+    range_high: float,
+):
+    """
+    Per the rule: entries should be taken INSIDE the PDH/PDL or CRT range,
+    relying on the 15m MSS/BOS for confirmation. If the MSS/BOS candle's
+    close is already outside the range (price broke away before structure
+    even confirmed), don't enter out there - wait for price to come back
+    inside the range first, then use that as the entry point.
+
+    Returns (entry_index, entry_price) if a valid in-range entry point is
+    found, or (None, None) if the MSS close was already inside the range
+    (use it directly) or if price hasn't come back inside yet.
+    """
+    closes = df["Close"].values
+    highs = df["High"].values
+    lows = df["Low"].values
+
+    mss_close = closes[mss_index]
+    if range_low <= mss_close <= range_high:
+        return None, None  # already inside the range - caller uses mss_index directly, no change needed
+
+    # MSS confirmed while price was already outside the range - scan forward
+    # for the first candle where price comes back inside the range
+    for j in range(mss_index + 1, len(df)):
+        if lows[j] <= range_high and highs[j] >= range_low:
+            return j, closes[j]
+
+    return "pending", None  # sentinel: MSS confirmed, but still waiting for re-entry
+
+
 def check_fvg_breaker_confluence(
     entry_index: int,
     direction: Direction,
@@ -403,9 +438,27 @@ def analyze_daily_setup(df_daily: pd.DataFrame, df_intraday: pd.DataFrame, symbo
         state.notes = f"Sweep of PD{'L' if state.sweep_side=='low' else 'H'} detected - waiting for MSS confirmation."
         return state
 
-    # MSS confirmed -> entry logic
-    entry_idx = state.mss_index
-    entry_price = intraday_today["Close"].values[entry_idx]
+    # MSS confirmed -> entry logic. Per the rule, entries are taken INSIDE
+    # the PDH/PDL range - if the MSS candle closed already outside the
+    # range, wait for price to come back inside before entering.
+    reentry_idx, reentry_price = find_entry_after_range_reentry(
+        intraday_today, state.mss_index, state.direction, state.range_low, state.range_high
+    )
+
+    if reentry_idx == "pending":
+        state.status = "mss_confirmed"
+        state.notes = (
+            f"MSS confirmed {state.direction.upper()}, but price broke outside the PDH/PDL range before "
+            f"confirming - waiting for price to return inside the range before entering."
+        )
+        return state
+    elif reentry_idx is not None:
+        entry_idx = reentry_idx
+        entry_price = reentry_price
+    else:
+        entry_idx = state.mss_index
+        entry_price = intraday_today["Close"].values[entry_idx]
+
     state.entry_price = entry_price
     state.stop_loss = state.sweep_price
     state.confluence = check_fvg_breaker_confluence(entry_idx, state.direction, fvgs, breakers)
@@ -556,8 +609,27 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
         state.notes = "Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing)."
         return state
 
-    entry_idx = state.mss_index
-    entry_price = intraday_after["Close"].values[entry_idx]
+    # MSS confirmed -> entry logic. Per the rule, entries are taken INSIDE
+    # the CRT range - if the MSS candle closed already outside the range,
+    # wait for price to come back inside before entering.
+    reentry_idx, reentry_price = find_entry_after_range_reentry(
+        intraday_after, state.mss_index, state.direction, range_low, range_high
+    )
+
+    if reentry_idx == "pending":
+        state.status = "mss_confirmed"
+        state.notes = (
+            f"MSS confirmed {state.direction.upper()}, but price broke outside the CRT range before "
+            f"confirming - waiting for price to return inside the range before entering."
+        )
+        return state
+    elif reentry_idx is not None:
+        entry_idx = reentry_idx
+        entry_price = reentry_price
+    else:
+        entry_idx = state.mss_index
+        entry_price = intraday_after["Close"].values[entry_idx]
+
     state.entry_price = entry_price
     state.stop_loss = state.sweep_price
     state.confluence = check_fvg_breaker_confluence(entry_idx, state.direction, fvgs, breakers)
