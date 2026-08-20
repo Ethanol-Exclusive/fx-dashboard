@@ -180,6 +180,7 @@ def detect_sweep_and_mss(
     range_low: float,
     swings: List[SwingPoint],
     search_start: int = 0,
+    min_displacement_ratio: float = 0.5,
 ) -> dict:
     """
     Scans forward from search_start looking for sweeps of range_high/range_low
@@ -190,8 +191,16 @@ def detect_sweep_and_mss(
     other side and reverses for real - the dashboard should reflect whichever
     setup is currently live/actionable, not a stale one from earlier in the
     session. Each new sweep (either side) overwrites any prior untracked state.
+
+    min_displacement_ratio: an MSS candle must have a real body, not just a
+    marginal close past structure - its body size (abs(close-open)) must be
+    at least this fraction of the recent average candle range (a simple
+    ATR-like measure over the prior 14 candles). A weak, barely-there close
+    is a much lower-conviction break of structure than one with genuine
+    displacement behind it. Set to 0 to disable this filter.
     """
     highs, lows, closes = df["High"].values, df["Low"].values, df["Close"].values
+    opens = df["Open"].values if "Open" in df.columns else closes.copy()
     result = {
         "sweep_detected": False, "sweep_side": None, "sweep_index": None, "sweep_price": None,
         "mss_confirmed": False, "mss_index": None, "direction": None, "invalidated": False,
@@ -230,17 +239,25 @@ def detect_sweep_and_mss(
             sweep_i = result["sweep_index"]
             if i <= sweep_i:
                 continue
+
+            # displacement check: this candle's body vs recent average range
+            body_size = abs(closes[i] - opens[i])
+            lookback_start = max(0, i - 14)
+            recent_ranges = highs[lookback_start:i] - lows[lookback_start:i]
+            avg_range = recent_ranges.mean() if len(recent_ranges) > 0 else 0
+            has_displacement = (avg_range == 0) or (body_size >= min_displacement_ratio * avg_range)
+
             if result["sweep_side"] == "low":
                 prior_highs = [s for s in swings if s.kind == "high" and s.index < i]
                 if prior_highs:
                     structure_level = prior_highs[-1].price
-                    if closes[i] > structure_level:
+                    if closes[i] > structure_level and has_displacement:
                         result.update(mss_confirmed=True, mss_index=i, direction="long")
             else:
                 prior_lows = [s for s in swings if s.kind == "low" and s.index < i]
                 if prior_lows:
                     structure_level = prior_lows[-1].price
-                    if closes[i] < structure_level:
+                    if closes[i] < structure_level and has_displacement:
                         result.update(mss_confirmed=True, mss_index=i, direction="short")
             # NOTE: no `break` here anymore - we keep scanning to the end of the
             # data so a later opposite sweep can still override this if it happens
@@ -291,6 +308,48 @@ def nearest_unswept_liquidity(
     candidates = deduped
 
     return candidates
+
+
+def compute_htf_bias(df_daily: pd.DataFrame, lookback: int = 10) -> str:
+    """
+    A simple higher-timeframe trend bias from daily closes: compares the
+    most recent CLOSED day's close against the average close over the
+    prior `lookback` days. Used to filter out counter-trend setups - e.g.
+    skip a long signal if the daily trend is clearly bearish.
+
+    Returns "bullish", "bearish", or "neutral" (not enough data, or too
+    close to call either way).
+    """
+    if len(df_daily) < 3:
+        return "neutral"
+
+    closes = df_daily["Close"].values
+    recent_closes = closes[-(lookback + 1):-1] if len(closes) > lookback else closes[:-1]
+    if len(recent_closes) == 0:
+        return "neutral"
+
+    last_close = closes[-1]
+    avg_close = recent_closes.mean()
+    if avg_close == 0:
+        return "neutral"
+
+    pct_diff = (last_close - avg_close) / avg_close
+    if pct_diff > 0.001:   # >0.1% above the recent average
+        return "bullish"
+    elif pct_diff < -0.001:
+        return "bearish"
+    return "neutral"
+
+
+def bias_allows_direction(bias: str, direction: Direction) -> bool:
+    """A long is filtered out only when bias is clearly bearish, and vice
+    versa - "neutral" doesn't block either direction, since it just means
+    there's no strong opposing trend to worry about."""
+    if bias == "bearish" and direction == "long":
+        return False
+    if bias == "bullish" and direction == "short":
+        return False
+    return True
 
 
 def find_entry_after_range_reentry(
@@ -438,6 +497,17 @@ def analyze_daily_setup(df_daily: pd.DataFrame, df_intraday: pd.DataFrame, symbo
         state.notes = f"Sweep of PD{'L' if state.sweep_side=='low' else 'H'} detected - waiting for MSS confirmation."
         return state
 
+    # HTF bias filter: skip counter-trend setups (e.g. a long when the
+    # daily trend is clearly bearish).
+    bias = compute_htf_bias(df_daily)
+    if not bias_allows_direction(bias, state.direction):
+        state.status = "mss_confirmed"
+        state.notes = (
+            f"MSS confirmed {state.direction.upper()}, but this goes against the current daily trend "
+            f"({bias}) - filtered out as counter-trend."
+        )
+        return state
+
     # MSS confirmed -> entry logic. Per the rule, entries are taken INSIDE
     # the PDH/PDL range - if the MSS candle closed already outside the
     # range, wait for price to come back inside before entering.
@@ -459,9 +529,18 @@ def analyze_daily_setup(df_daily: pd.DataFrame, df_intraday: pd.DataFrame, symbo
         entry_idx = state.mss_index
         entry_price = intraday_today["Close"].values[entry_idx]
 
+    confluence = check_fvg_breaker_confluence(entry_idx, state.direction, fvgs, breakers)
+    if not confluence:
+        state.status = "mss_confirmed"
+        state.notes = (
+            f"MSS confirmed {state.direction.upper()} and price is inside the range, but no FVG or breaker "
+            f"block confluence found yet - waiting for confluence before entering."
+        )
+        return state
+
     state.entry_price = entry_price
     state.stop_loss = state.sweep_price
-    state.confluence = check_fvg_breaker_confluence(entry_idx, state.direction, fvgs, breakers)
+    state.confluence = confluence
 
     liquidity = nearest_unswept_liquidity(
         entry_price, state.direction, swings, session_high=None, session_low=None, up_to_index=entry_idx
@@ -511,13 +590,15 @@ def get_5am_ny_candle_range(df_4h: pd.DataFrame, target_hour: int = 5) -> Option
     return {"high": last["High"], "low": last["Low"], "time": open_time, "close_time": close_time}
 
 
-def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol: str, target_hour: int = 5) -> SetupState:
+def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol: str, target_hour: int = 5, df_daily: Optional[pd.DataFrame] = None) -> SetupState:
     """
     df_4h: 4H OHLC, used to find the CRT candle range
     df_intraday: 5m or 15m OHLC used to detect the sweep/MSS and refine entry
     target_hour: NY hour the CRT candle opens on. Defaults to 5AM (forex).
         Some index CFDs (NAS100/US30) run on a session grid offset by an
         hour - pass target_hour=6 for those instruments.
+    df_daily: daily OHLC, used for the higher-timeframe bias filter. If not
+        provided, the bias filter is skipped (treated as neutral).
 
     Per the rule: mark the CRT range, but only start looking for a
     sweep/MSS entry AFTER that candle has finished printing (4 hours after
@@ -609,9 +690,20 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
         state.notes = "Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing)."
         return state
 
-    # MSS confirmed -> entry logic. Per the rule, entries are taken INSIDE
-    # the CRT range - if the MSS candle closed already outside the range,
-    # wait for price to come back inside before entering.
+    # HTF bias filter: skip counter-trend setups
+    if df_daily is not None:
+        bias = compute_htf_bias(df_daily)
+        if not bias_allows_direction(bias, state.direction):
+            state.status = "mss_confirmed"
+            state.notes = (
+                f"MSS confirmed {state.direction.upper()} off 5AM NY range, but this goes against the "
+                f"current daily trend ({bias}) - filtered out as counter-trend."
+            )
+            return state
+
+    # MSS confirmed -> entry logic. Per the rule, entries are ONLY taken
+    # INSIDE the CRT range - if the MSS candle closed already outside the
+    # range, wait for price to come back inside before entering.
     reentry_idx, reentry_price = find_entry_after_range_reentry(
         intraday_after, state.mss_index, state.direction, range_low, range_high
     )
@@ -630,9 +722,18 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
         entry_idx = state.mss_index
         entry_price = intraday_after["Close"].values[entry_idx]
 
+    confluence = check_fvg_breaker_confluence(entry_idx, state.direction, fvgs, breakers)
+    if not confluence:
+        state.status = "mss_confirmed"
+        state.notes = (
+            f"MSS confirmed {state.direction.upper()} and price is inside the CRT range, but no FVG or "
+            f"breaker block confluence found yet - waiting for confluence before entering."
+        )
+        return state
+
     state.entry_price = entry_price
     state.stop_loss = state.sweep_price
-    state.confluence = check_fvg_breaker_confluence(entry_idx, state.direction, fvgs, breakers)
+    state.confluence = confluence
 
     liquidity = nearest_unswept_liquidity(
         entry_price, state.direction, swings,
