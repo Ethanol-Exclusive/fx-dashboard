@@ -308,7 +308,7 @@ def analyze_symbol(name, ticker):
                 candidate_state = safe_setup_state("NY 5AM CRT", name, "No data available for this symbol yet.")
             else:
                 try:
-                    candidate_state = analyze_ny_crt_setup(df_4h, df_15m, name, target_hour=hour)
+                    candidate_state = analyze_ny_crt_setup(df_4h, df_15m, name, target_hour=hour, df_daily=df_daily)
                 except Exception as e:
                     candidate_state = safe_setup_state("NY 5AM CRT", name, f"Analysis error: {e}")
 
