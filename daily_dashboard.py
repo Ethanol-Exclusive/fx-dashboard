@@ -299,8 +299,18 @@ def analyze_symbol(name, ticker):
         # (some instruments' CRT candle shifts hour day-to-day, e.g. DST
         # drift) and use whichever candidate produces the best result.
         candidate_hours = CRT_HOUR_CANDIDATES.get(name, [5])
-        status_priority = {"mss_confirmed": 3, "sweep_only": 2, "waiting": 1, "no_data": 0}
         best_state = None
+
+        def _candidate_score(s):
+            # A genuinely live signal (confirmed AND has an entry price)
+            # ranks above a merely-confirmed-but-filtered one (e.g. blocked
+            # by the HTF bias/confluence filters) - that filtered state
+            # isn't more useful than a plain "waiting" from another hour.
+            if s.status == "mss_confirmed" and s.entry_price is not None:
+                return 4
+            if s.status == "mss_confirmed":
+                return 2  # confirmed but filtered - still informative, but not a live signal
+            return {"sweep_only": 3, "waiting": 1, "no_data": 0}.get(s.status, 0)
 
         for hour in candidate_hours:
             df_4h = build_4h_anchored_to_hour(df_1h, hour)
@@ -312,13 +322,8 @@ def analyze_symbol(name, ticker):
                 except Exception as e:
                     candidate_state = safe_setup_state("NY 5AM CRT", name, f"Analysis error: {e}")
 
-            if best_state is None:
+            if best_state is None or _candidate_score(candidate_state) > _candidate_score(best_state):
                 best_state = candidate_state
-            else:
-                current_priority = status_priority.get(candidate_state.status, 0)
-                best_priority = status_priority.get(best_state.status, 0)
-                if current_priority > best_priority:
-                    best_state = candidate_state
 
         results["setup_b"] = best_state
 
@@ -341,11 +346,23 @@ def fmt(value, decimals=4):
 
 
 def render_setup_card(state: SetupState) -> str:
-    color = STATUS_COLORS.get(state.status, "#555")
-    label = STATUS_LABELS.get(state.status, (state.status or "unknown").upper())
+    # A "live" signal needs BOTH mss_confirmed status AND an actual entry
+    # price - the new displacement/HTF-bias/confluence filters can leave
+    # status as "mss_confirmed" while entry_price stays None (filtered out),
+    # which should NOT display as a green "SIGNAL LIVE" / BUY-SELL card.
+    is_live_signal = state.status == "mss_confirmed" and state.entry_price is not None
+    is_filtered = state.status == "mss_confirmed" and state.entry_price is None
+
+    if is_live_signal:
+        color, label = STATUS_COLORS["mss_confirmed"], STATUS_LABELS["mss_confirmed"]
+    elif is_filtered:
+        color, label = "#555", "FILTERED — no entry"
+    else:
+        color = STATUS_COLORS.get(state.status, "#555")
+        label = STATUS_LABELS.get(state.status, (state.status or "unknown").upper())
 
     levels_html = ""
-    if state.status == "mss_confirmed":
+    if is_live_signal:
         conf = ", ".join(state.confluence) if state.confluence else "—"
         dir_color = "#1e9e5a" if state.direction == "long" else "#c0392b"
         direction_label = "BUY" if state.direction == "long" else "SELL" if state.direction == "short" else "—"
