@@ -136,57 +136,58 @@ def build_alert_message(symbol, state: SetupState) -> str:
     )
 
 
-# Secondary/fallback data source (Twelve Data) - only used when the primary
-# source (Yahoo Finance) returns nothing for a given fetch, e.g. a delayed
-# or missing candle causing a real setup to go undetected. Inactive unless
-# TWELVE_DATA_API_KEY is set, so this is a no-op until configured.
-TWELVE_DATA_API_KEY = os.environ.get("TWELVE_DATA_API_KEY", "")
-TWELVE_DATA_BASE_URL = "https://api.twelvedata.com"
-TWELVE_DATA_SYMBOLS = {
-    "GOLD":   "XAU/USD",
-    "NAS100": "NDX",
-    "EURUSD": "EUR/USD",
-    "USDJPY": "USD/JPY",
-    "GBPUSD": "GBP/USD",
-    "BTCUSD": "BTC/USD",
-    "AUDUSD": "AUD/USD",
-    "US30":   "DJI",
-    "USDCAD": "USD/CAD",
-    "NZDUSD": "NZD/USD",
-    "GER30":  "DAX",
+# OANDA is the PRIMARY data source for all instruments - real spot/CFD
+# pricing that tracks brokers far more closely than Yahoo's mix of futures
+# (GC=F) and cash index (^NDX, ^DJI) tickers. Yahoo Finance is kept only as
+# a backup for whenever OANDA is unavailable (rate limit, outage, missing
+# instrument, or no token configured).
+OANDA_API_TOKEN = os.environ.get("OANDA_API_TOKEN", "")
+OANDA_BASE_URL = "https://api-fxpractice.oanda.com"
+OANDA_INSTRUMENTS = {
+    "GOLD":   "XAU_USD",
+    "NAS100": "NAS100_USD",
+    "EURUSD": "EUR_USD",
+    "USDJPY": "USD_JPY",
+    "GBPUSD": "GBP_USD",
+    "BTCUSD": "BTC_USD",
+    "AUDUSD": "AUD_USD",
+    "US30":   "US30_USD",
+    "USDCAD": "USD_CAD",
+    "NZDUSD": "NZD_USD",
+    "GER30":  "DE30_EUR",
 }
-YFINANCE_TO_NAME = {v: k for k, v in SYMBOLS.items()}
 
 
-def fetch_twelvedata_fallback(name, interval, outputsize):
-    """Fallback fetch via Twelve Data, used only when Yahoo returns empty.
-    interval: Twelve Data codes - "1day", "1h", "15min" """
-    if not TWELVE_DATA_API_KEY:
+def fetch_oanda(name, granularity, count):
+    """Pulls OHLC candles from OANDA's v20 API.
+    granularity: OANDA codes - "D" (daily), "H1" (1 hour), "M15" (15 min)"""
+    instrument = OANDA_INSTRUMENTS.get(name)
+    if not instrument or not OANDA_API_TOKEN:
         return pd.DataFrame()
-    td_symbol = TWELVE_DATA_SYMBOLS.get(name)
-    if not td_symbol:
-        return pd.DataFrame()
+
     try:
-        resp = requests.get(f"{TWELVE_DATA_BASE_URL}/time_series", params={
-            "symbol": td_symbol, "interval": interval, "outputsize": outputsize,
-            "apikey": TWELVE_DATA_API_KEY, "timezone": "UTC",
-        }, timeout=15)
+        url = f"{OANDA_BASE_URL}/v3/instruments/{instrument}/candles"
+        headers = {"Authorization": f"Bearer {OANDA_API_TOKEN}"}
+        params = {"granularity": granularity, "count": count, "price": "M"}
+        resp = requests.get(url, headers=headers, params=params, timeout=15)
         if resp.status_code != 200:
+            print(f"OANDA fetch failed for {name} ({granularity}): {resp.status_code} {resp.text[:200]}")
             return pd.DataFrame()
-        data = resp.json()
-    except Exception:
-        return pd.DataFrame()
-
-    if data.get("status") == "error":
+        candles = resp.json().get("candles", [])
+    except Exception as e:
+        print(f"OANDA fetch error for {name} ({granularity}): {e}")
         return pd.DataFrame()
 
     rows = []
-    for v in data.get("values", []):
+    for c in candles:
+        if not c.get("complete", True):
+            continue
         try:
-            t = pd.Timestamp(v["datetime"])
+            t = pd.Timestamp(c["time"])
             t = t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
-            rows.append({"time": t, "Open": float(v["open"]), "High": float(v["high"]),
-                         "Low": float(v["low"]), "Close": float(v["close"])})
+            mid = c["mid"]
+            rows.append({"time": t, "Open": float(mid["o"]), "High": float(mid["h"]),
+                         "Low": float(mid["l"]), "Close": float(mid["c"])})
         except (KeyError, ValueError, TypeError):
             continue
 
@@ -195,37 +196,45 @@ def fetch_twelvedata_fallback(name, interval, outputsize):
     return pd.DataFrame(rows).set_index("time").sort_index()
 
 
-def fetch(symbol, interval, period):
-    """Pulls OHLC data for one symbol from Yahoo Finance (primary). If that
-    comes back empty, falls back to Twelve Data (if TWELVE_DATA_API_KEY is
-    configured) rather than silently missing a setup because of one
-    source's gap or delay. Returns an empty DataFrame (not an exception) if
-    both sources fail, so callers can check .empty rather than needing a
-    try/except at every call site."""
+def fetch_yahoo(ticker, interval, period):
+    """Backup fetch via Yahoo Finance, used only when OANDA returns empty."""
     try:
-        df = yf.download(symbol, interval=interval, period=period, progress=False, auto_adjust=True)
+        df = yf.download(ticker, interval=interval, period=period, progress=False, auto_adjust=True)
     except Exception:
-        df = None
+        return pd.DataFrame()
 
-    if df is not None and not df.empty:
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [c[0] for c in df.columns]
-        required = {"Open", "High", "Low", "Close"}
-        if required.issubset(set(df.columns)):
-            cleaned = df.dropna(subset=["Open", "High", "Low", "Close"])
-            if not cleaned.empty:
-                return cleaned
+    if df is None or df.empty:
+        return pd.DataFrame()
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [c[0] for c in df.columns]
+    required = {"Open", "High", "Low", "Close"}
+    if not required.issubset(set(df.columns)):
+        return pd.DataFrame()
+    return df.dropna(subset=["Open", "High", "Low", "Close"])
 
-    # Primary source came back empty/unusable - try the fallback
-    name = YFINANCE_TO_NAME.get(symbol)
-    if name and TWELVE_DATA_API_KEY:
-        td_interval = {"1d": "1day", "1h": "1h", "15m": "15min"}.get(interval)
-        td_outputsize = {"1d": 30, "1h": 500, "15m": 2000}.get(interval, 500)
-        if td_interval:
-            print(f"Yahoo Finance returned nothing for {symbol} ({interval}) - trying Twelve Data fallback.")
-            fallback_df = fetch_twelvedata_fallback(name, td_interval, td_outputsize)
-            if not fallback_df.empty:
-                return fallback_df
+
+def fetch(name, interval, period):
+    """Pulls OHLC data for one instrument, trying OANDA first (primary) and
+    falling back to Yahoo Finance if OANDA has nothing usable (no token
+    configured, rate limited, instrument unavailable, etc). Returns an
+    empty DataFrame (not an exception) if both sources fail, so callers
+    can check .empty rather than needing a try/except at every call site.
+
+    interval: "1d", "1h", or "15m" (mapped internally to each source's codes)
+    """
+    oanda_granularity = {"1d": "D", "1h": "H1", "15m": "M15"}.get(interval)
+    oanda_count = {"1d": 30, "1h": 500, "15m": 2000}.get(interval, 500)
+
+    if oanda_granularity:
+        df = fetch_oanda(name, oanda_granularity, oanda_count)
+        if not df.empty:
+            return df
+
+    # OANDA unavailable/empty - fall back to Yahoo
+    ticker = SYMBOLS.get(name)
+    if ticker:
+        print(f"OANDA returned nothing for {name} ({interval}) - trying Yahoo Finance backup.")
+        return fetch_yahoo(ticker, interval, period)
 
     return pd.DataFrame()
 
@@ -273,9 +282,9 @@ def build_4h_anchored_to_hour(df_1h: pd.DataFrame, target_hour: int) -> pd.DataF
 def analyze_symbol(name, ticker):
     results = {}
     try:
-        df_daily = fetch(ticker, "1d", "30d")
-        df_15m = fetch(ticker, "15m", "60d")
-        df_1h = fetch(ticker, "1h", "60d")  # resampled to 4H below, anchored per-instrument
+        df_daily = fetch(name, "1d", "30d")
+        df_15m = fetch(name, "15m", "60d")
+        df_1h = fetch(name, "1h", "60d")  # resampled to 4H below, anchored per-instrument
 
         # Setup A - Daily PDH/PDL
         if not df_daily.empty and not df_15m.empty:
