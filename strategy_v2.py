@@ -70,6 +70,14 @@ class BreakerBlock:
 
 
 @dataclass
+class OrderBlock:
+    index: int          # index of the origin candle (last opposite candle before impulsive displacement)
+    top: float
+    bottom: float
+    direction: Direction   # direction order block supports (long/short)
+
+
+@dataclass
 class LiquidityLevel:
     price: float
     kind: str            # "swing_high" / "swing_low" / "session_high" / "session_low" / "PDH" / "PDL"
@@ -171,6 +179,43 @@ def find_breaker_blocks(df: pd.DataFrame, swings: List[SwingPoint]) -> List[Brea
                             blocks.append(BreakerBlock(k, top=highs[k], bottom=lows[k], direction="short"))
                             break
                     break
+    return blocks
+
+
+def find_order_blocks(df: pd.DataFrame, min_displacement_ratio: float = 0.5) -> List[OrderBlock]:
+    """
+    General order block detection: the last opposite-colored candle
+    immediately before an impulsive displacement move, regardless of
+    whether that move breaks a specific swing point (unlike breaker
+    blocks, which specifically require a structure break).
+    - Bullish order block: last down-candle before a strong up-displacement candle
+    - Bearish order block: last up-candle before a strong down-displacement candle
+
+    A move counts as "impulsive displacement" using the same body-vs-recent-
+    average-range measure used for the MSS displacement filter.
+    """
+    blocks = []
+    opens, closes = df["Open"].values, df["Close"].values
+    highs, lows = df["High"].values, df["Low"].values
+
+    for i in range(1, len(df)):
+        body_size = abs(closes[i] - opens[i])
+        lookback_start = max(0, i - 14)
+        recent_ranges = highs[lookback_start:i] - lows[lookback_start:i]
+        avg_range = recent_ranges.mean() if len(recent_ranges) > 0 else 0
+        has_displacement = avg_range > 0 and body_size >= min_displacement_ratio * avg_range * 2  # stronger bar than plain MSS displacement
+
+        if not has_displacement:
+            continue
+
+        is_bullish_displacement = closes[i] > opens[i]
+        origin = i - 1
+
+        if is_bullish_displacement and closes[origin] < opens[origin]:
+            blocks.append(OrderBlock(origin, top=highs[origin], bottom=lows[origin], direction="long"))
+        elif not is_bullish_displacement and closes[origin] > opens[origin]:
+            blocks.append(OrderBlock(origin, top=highs[origin], bottom=lows[origin], direction="short"))
+
     return blocks
 
 
@@ -393,8 +438,9 @@ def check_fvg_breaker_confluence(
     fvgs: List[FVG],
     breakers: List[BreakerBlock],
     lookback: int = 15,
+    order_blocks: Optional[List[OrderBlock]] = None,
 ) -> List[str]:
-    """Checks whether an FVG or breaker block sits near the entry, for confluence tagging."""
+    """Checks whether an FVG, breaker block, or order block sits near the entry, for confluence tagging."""
     tags = []
     recent_fvgs = [f for f in fvgs if f.direction == direction and entry_index - lookback <= f.index <= entry_index]
     if recent_fvgs:
@@ -402,6 +448,10 @@ def check_fvg_breaker_confluence(
     recent_breakers = [b for b in breakers if b.direction == direction and entry_index - lookback <= b.index <= entry_index]
     if recent_breakers:
         tags.append("Breaker Block")
+    if order_blocks:
+        recent_order_blocks = [o for o in order_blocks if o.direction == direction and entry_index - lookback <= o.index <= entry_index]
+        if recent_order_blocks:
+            tags.append("Order Block")
     return tags
 
 
@@ -476,6 +526,7 @@ def analyze_daily_setup(df_daily: pd.DataFrame, df_intraday: pd.DataFrame, symbo
     swings = find_swings(intraday_today, lookback=3)
     fvgs = find_fvgs(intraday_today)
     breakers = find_breaker_blocks(intraday_today, swings)
+    order_blocks = find_order_blocks(intraday_today)
 
     scan = detect_sweep_and_mss(intraday_today, pdh, pdl, swings)
 
@@ -529,7 +580,7 @@ def analyze_daily_setup(df_daily: pd.DataFrame, df_intraday: pd.DataFrame, symbo
         entry_idx = state.mss_index
         entry_price = intraday_today["Close"].values[entry_idx]
 
-    confluence = check_fvg_breaker_confluence(entry_idx, state.direction, fvgs, breakers)
+    confluence = check_fvg_breaker_confluence(entry_idx, state.direction, fvgs, breakers, order_blocks=order_blocks)
     if not confluence:
         state.status = "mss_confirmed"
         state.notes = (
@@ -669,6 +720,7 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
     swings = find_swings(intraday_after, lookback=3)
     fvgs = find_fvgs(intraday_after)
     breakers = find_breaker_blocks(intraday_after, swings)
+    order_blocks = find_order_blocks(intraday_after)
 
     scan = detect_sweep_and_mss(intraday_after, range_high, range_low, swings)
 
@@ -722,7 +774,7 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
         entry_idx = state.mss_index
         entry_price = intraday_after["Close"].values[entry_idx]
 
-    confluence = check_fvg_breaker_confluence(entry_idx, state.direction, fvgs, breakers)
+    confluence = check_fvg_breaker_confluence(entry_idx, state.direction, fvgs, breakers, order_blocks=order_blocks)
     if not confluence:
         state.status = "mss_confirmed"
         state.notes = (
