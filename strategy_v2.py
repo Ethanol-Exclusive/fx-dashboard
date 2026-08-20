@@ -322,13 +322,43 @@ def analyze_daily_setup(df_daily: pd.DataFrame, df_intraday: pd.DataFrame, symbo
     if len(df_daily) < 2:
         return SetupState("Daily PDH/PDL", symbol, np.nan, np.nan, "Previous Day", status="no_data")
 
-    prev_day = df_daily.iloc[-2]
+    # Which row is "yesterday" depends on whether df_daily's last row is
+    # today's still-forming candle or already a fully-closed day - this
+    # differs by data source. Yahoo Finance includes today's in-progress
+    # candle as the last row (so yesterday = iloc[-2]). OANDA's feed only
+    # includes fully-closed candles (so its last row IS already yesterday,
+    # making yesterday = iloc[-1] - using iloc[-2] there would silently
+    # grab TWO days ago instead).
+    #
+    # Rather than compare exact calendar dates (fragile - depends on exactly
+    # how each source labels/timezones its daily timestamp), check how
+    # recently the last row's timestamp occurred: if it's within the last
+    # ~26 hours, it's still today's in-progress candle; if it's older than
+    # that, it must already be a fully-closed day.
+    last_row_time = df_daily.index[-1]
+    now_utc = pd.Timestamp.now(tz="UTC")
+    last_row_time_utc = last_row_time.tz_convert("UTC") if last_row_time.tzinfo else last_row_time.tz_localize("UTC")
+    hours_since_last_row = (now_utc - last_row_time_utc).total_seconds() / 3600
+
+    if hours_since_last_row < 26:
+        prev_day = df_daily.iloc[-2]   # last row is recent/still forming - yesterday is one back
+        last_row_is_today = True
+    else:
+        prev_day = df_daily.iloc[-1]   # last row is already an old, closed day - that IS yesterday
+        last_row_is_today = False
+
     pdh, pdl = prev_day["High"], prev_day["Low"]
 
     state = SetupState("Daily PDH/PDL", symbol, pdh, pdl, "Previous Day")
 
-    # restrict intraday df to candles that occurred after prev day's close (today's session)
-    today_start = df_daily.index[-1]
+    # restrict intraday df to candles that occurred after prev day's close
+    # (today's session). If the daily series' last row is already a closed
+    # past day (OANDA case), "today" starts the day AFTER that row, not at
+    # that row's own timestamp.
+    if last_row_is_today:
+        today_start = df_daily.index[-1]
+    else:
+        today_start = prev_day.name + pd.Timedelta(days=1)
 
     # align timezone-awareness between today_start and df_intraday's index
     # before comparing, otherwise pandas raises on tz-naive vs tz-aware
