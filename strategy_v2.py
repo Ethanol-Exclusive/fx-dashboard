@@ -104,6 +104,7 @@ class SetupState:
     tp1: Optional[float] = None
     tp2: Optional[float] = None
     confluence: List[str] = field(default_factory=list)   # e.g. ["FVG", "Breaker Block"]
+    against_trend: bool = False   # True if the signal fired despite opposing the 4H bias
     status: str = "waiting"     # waiting / sweep_only / mss_confirmed / in_trade / tp1_hit / invalidated
     notes: str = ""
 
@@ -548,16 +549,18 @@ def analyze_daily_setup(df_daily: pd.DataFrame, df_intraday: pd.DataFrame, symbo
         state.notes = f"Sweep of PD{'L' if state.sweep_side=='low' else 'H'} detected - waiting for MSS confirmation."
         return state
 
-    # HTF bias filter: skip counter-trend setups (e.g. a long when the
-    # daily trend is clearly bearish).
-    bias = compute_htf_bias(df_daily)
-    if not bias_allows_direction(bias, state.direction):
-        state.status = "mss_confirmed"
-        state.notes = (
-            f"MSS confirmed {state.direction.upper()}, but this goes against the current daily trend "
-            f"({bias}) - filtered out as counter-trend."
-        )
-        return state
+    # HTF bias: derived from the 4H timeframe (built from the full intraday
+    # history) rather than daily, per instruction to weight 4H more heavily
+    # than daily for trend bias. A signal against the bias is NOT filtered
+    # out - it still fires, but gets marked "Against Trend".
+    try:
+        df_4h_bias = df_intraday.resample("4h").agg(
+            {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
+        ).dropna()
+        bias = compute_htf_bias(df_4h_bias)
+    except Exception:
+        bias = "neutral"
+    state.against_trend = not bias_allows_direction(bias, state.direction)
 
     # MSS confirmed -> entry logic. Per the rule, entries are taken INSIDE
     # the PDH/PDL range - if the MSS candle closed already outside the
@@ -602,8 +605,9 @@ def analyze_daily_setup(df_daily: pd.DataFrame, df_intraday: pd.DataFrame, symbo
         state.tp2 = liquidity[1].price
 
     state.status = "mss_confirmed"
+    trend_tag = " [AGAINST TREND]" if state.against_trend else ""
     state.notes = (
-        f"MSS confirmed {state.direction.upper()}. Entry ~{entry_price:.4f}, "
+        f"MSS confirmed {state.direction.upper()}{trend_tag}. Entry ~{entry_price:.4f}, "
         f"SL {state.stop_loss:.4f}, TP1 {state.tp1}, TP2 {state.tp2}. "
         f"Confluence: {', '.join(state.confluence) if state.confluence else 'none'}."
     )
@@ -742,16 +746,12 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
         state.notes = "Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing)."
         return state
 
-    # HTF bias filter: skip counter-trend setups
-    if df_daily is not None:
-        bias = compute_htf_bias(df_daily)
-        if not bias_allows_direction(bias, state.direction):
-            state.status = "mss_confirmed"
-            state.notes = (
-                f"MSS confirmed {state.direction.upper()} off 5AM NY range, but this goes against the "
-                f"current daily trend ({bias}) - filtered out as counter-trend."
-            )
-            return state
+    # HTF bias: derived from the 4H timeframe (df_4h is already the CRT's
+    # native 4H data) rather than daily, per instruction to weight 4H more
+    # heavily than daily. A signal against the bias is NOT filtered out -
+    # it still fires, but gets marked "Against Trend".
+    bias = compute_htf_bias(df_4h)
+    state.against_trend = not bias_allows_direction(bias, state.direction)
 
     # MSS confirmed -> entry logic. Per the rule, entries are ONLY taken
     # INSIDE the CRT range - if the MSS candle closed already outside the
@@ -797,8 +797,9 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
         state.tp2 = liquidity[1].price
 
     state.status = "mss_confirmed"
+    trend_tag = " [AGAINST TREND]" if state.against_trend else ""
     state.notes = (
-        f"MSS confirmed {state.direction.upper()} off 5AM NY range. Entry ~{entry_price:.4f}, "
+        f"MSS confirmed {state.direction.upper()} off 5AM NY range{trend_tag}. Entry ~{entry_price:.4f}, "
         f"SL {state.stop_loss:.4f}, TP1 {state.tp1}, TP2 {state.tp2}. "
         f"Confluence: {', '.join(state.confluence) if state.confluence else 'none'}."
     )
