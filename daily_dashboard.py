@@ -121,13 +121,15 @@ def build_alert_message(symbol, state: SetupState) -> str:
     conf = ", ".join(state.confluence) if state.confluence else "none"
     direction_word = "BUY" if state.direction == "long" else "SELL"
     emoji = "🟢" if state.direction == "long" else "🔴"
+    trend_line = "\n⚠️ *AGAINST 4H TREND*\n" if state.against_trend else ""
 
     tp1_line = f"TP1 (→ BE): `{state.tp1:.5f}`\n" if state.tp1 is not None else "TP1: no liquidity found yet\n"
     tp2_line = f"TP2: `{state.tp2:.5f}`\n" if state.tp2 is not None else ""
 
     return (
         f"{emoji} *{direction_word} — {symbol}*\n"
-        f"_{state.setup_name}_\n\n"
+        f"_{state.setup_name}_\n"
+        f"{trend_line}\n"
         f"Entry: `{state.entry_price:.5f}`\n"
         f"Stop Loss: `{state.stop_loss:.5f}`\n"
         f"{tp1_line}"
@@ -355,6 +357,8 @@ def render_setup_card(state: SetupState) -> str:
 
     if is_live_signal:
         color, label = STATUS_COLORS["mss_confirmed"], STATUS_LABELS["mss_confirmed"]
+        if state.against_trend:
+            label = "SIGNAL LIVE ⚠"
     elif is_filtered:
         color, label = "#555", "FILTERED — no entry"
     else:
@@ -366,9 +370,11 @@ def render_setup_card(state: SetupState) -> str:
         conf = ", ".join(state.confluence) if state.confluence else "—"
         dir_color = "#1e9e5a" if state.direction == "long" else "#c0392b"
         direction_label = "BUY" if state.direction == "long" else "SELL" if state.direction == "short" else "—"
+        trend_warning = '<div class="row" style="color:#c9a227"><span>⚠ Against 4H trend</span><b></b></div>' if state.against_trend else ""
         levels_html = f"""
         <div class="levels">
           <div class="dir" style="color:{dir_color}">{direction_label}</div>
+          {trend_warning}
           <div class="row"><span>Entry</span><b>{fmt(state.entry_price)}</b></div>
           <div class="row"><span>Stop Loss</span><b>{fmt(state.stop_loss)}</b></div>
           <div class="row"><span>TP1 (→ move SL to BE)</span><b>{fmt(state.tp1)}</b></div>
