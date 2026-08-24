@@ -2,5 +2,7 @@
   "GOLD|Daily PDH/PDL|short|4629.48000": true,
   "NAS100|Daily PDH/PDL|long|29156.80000": true,
   "USDJPY|Daily PDH/PDL|short|159.04800": true,
+  "BTCUSD|Daily PDH/PDL|short|78523.50000": true,
+  "BTCUSD|NY 5AM CRT|short|78523.50000": true,
   "GER30|Daily PDH/PDL|short|26088.60000": true
 }
