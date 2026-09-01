@@ -2,6 +2,8 @@
   "EURUSD|Daily PDH/PDL|short|1.16112": true,
   "USDJPY|Daily PDH/PDL|short|159.98400": true,
   "AUDUSD|Daily PDH/PDL|short|0.71652": true,
+  "AUDUSD|NY 5AM CRT|short|0.71471": true,
   "US30|Daily PDH/PDL|long|53129.80000": true,
-  "NZDUSD|Daily PDH/PDL|short|0.59134": true
+  "NZDUSD|Daily PDH/PDL|short|0.59134": true,
+  "NZDUSD|NY 5AM CRT|short|0.58997": true
 }
