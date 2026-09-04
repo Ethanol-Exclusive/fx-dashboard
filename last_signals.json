@@ -1,7 +1,9 @@
 {
+  "NAS100|Daily PDH/PDL|short|29443.10000": true,
   "USDJPY|Daily PDH/PDL|long|156.39600": true,
   "GBPUSD|Daily PDH/PDL|short|1.35229": true,
   "BTCUSD|Daily PDH/PDL|short|80790.00000": true,
+  "BTCUSD|NY 5AM CRT|long|79864.00000": true,
   "NZDUSD|Daily PDH/PDL|short|0.58916": true,
   "GER30|Daily PDH/PDL|short|26008.80000": true
 }
