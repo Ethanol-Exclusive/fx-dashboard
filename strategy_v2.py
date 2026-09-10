@@ -138,6 +138,70 @@ def find_swings(df: pd.DataFrame, lookback: int = 5) -> List[SwingPoint]:
     return swings
 
 
+def classify_structure_breaks(
+    df: pd.DataFrame,
+    swings: List[SwingPoint],
+    use_high_low: bool = True,
+) -> List[dict]:
+    """
+    Ports the BOS vs MSS state machine from the "Multi Timeframe Break of
+    Structure(BOS) & Market Structure Shift(MSS)" Pine Script indicator
+    (Lenny_Kiruthu). This is a stricter, more correct distinction than
+    "any close past the last opposite swing point":
+
+    - Tracks the most recent unbroken swing high and swing low.
+    - When price closes (or wicks, if use_high_low=True) beyond one of
+      those levels, that's a structure break. Whether it's labeled BOS
+      or MSS depends on the direction of the PREVIOUS break:
+        - Same direction as the previous break -> BOS (continuation)
+        - Opposite direction from the previous break -> MSS (reversal)
+        - No previous break yet -> unclassified (matches the source,
+          which doesn't plot/alert on the very first break either)
+
+    Returns a list of dicts: {"index": i, "type": "BOS"/"MSS", "direction": "long"/"short"}
+    """
+    highs, lows, closes = df["High"].values, df["Low"].values, df["Close"].values
+    price_for_high = highs if use_high_low else closes
+    price_for_low = lows if use_high_low else closes
+
+    swing_highs_by_index = {s.index: s.price for s in swings if s.kind == "high"}
+    swing_lows_by_index = {s.index: s.price for s in swings if s.kind == "low"}
+
+    prev_high = None
+    prev_low = None
+    high_present = False
+    low_present = False
+    prev_breakout_type = 0  # 0 = none yet, 1 = last break was bullish, -1 = last break was bearish
+
+    breaks: List[dict] = []
+
+    for i in range(len(df)):
+        if i in swing_highs_by_index:
+            prev_high = swing_highs_by_index[i]
+            high_present = True
+        if i in swing_lows_by_index:
+            prev_low = swing_lows_by_index[i]
+            low_present = True
+
+        if high_present and prev_high is not None and price_for_high[i] > prev_high:
+            if prev_breakout_type == 1:
+                breaks.append({"index": i, "type": "BOS", "direction": "long"})
+            elif prev_breakout_type == -1:
+                breaks.append({"index": i, "type": "MSS", "direction": "long"})
+            high_present = False
+            prev_breakout_type = 1
+
+        if low_present and prev_low is not None and price_for_low[i] < prev_low:
+            if prev_breakout_type == -1:
+                breaks.append({"index": i, "type": "BOS", "direction": "short"})
+            elif prev_breakout_type == 1:
+                breaks.append({"index": i, "type": "MSS", "direction": "short"})
+            low_present = False
+            prev_breakout_type = -1
+
+    return breaks
+
+
 def find_fvgs(df: pd.DataFrame) -> List[FVG]:
     fvgs = []
     highs, lows = df["High"].values, df["Low"].values
@@ -181,6 +245,53 @@ def find_breaker_blocks(df: pd.DataFrame, swings: List[SwingPoint]) -> List[Brea
                             break
                     break
     return blocks
+
+
+def find_precise_breaker_block(
+    df: pd.DataFrame,
+    sweep_index: int,
+    mss_index: int,
+    direction: Direction,
+    only_body: bool = False,
+) -> Optional[BreakerBlock]:
+    """
+    A more precise, trade-specific breaker block, ported from LuxAlgo's
+    "Breaker Blocks with Signals" indicator. Rather than searching a fixed
+    handful of candles backward from the MSS break (find_breaker_blocks
+    above), this searches FORWARD from the swept structure point toward
+    the confirming MSS break, and takes the FIRST candle of the correct
+    color in that window - this ties the breaker block specifically to
+    THIS trade's sweep-to-MSS move, not just any nearby candle.
+    - Bullish breaker: first GREEN candle between the sweep and the MSS break
+    - Bearish breaker: first RED candle between the sweep and the MSS break
+
+    only_body: if True, use the candle's open/close (body) for the block's
+    top/bottom instead of its full high/low wick range.
+
+    Returns None if no matching-colored candle is found in that window.
+    """
+    opens, closes = df["Open"].values, df["Close"].values
+    highs, lows = df["High"].values, df["Low"].values
+
+    start = sweep_index + 1
+    end = mss_index
+    if start >= end:
+        return None
+
+    for i in range(start, end):
+        is_green = closes[i] > opens[i]
+        is_red = closes[i] < opens[i]
+
+        if direction == "long" and is_green:
+            top = max(closes[i], opens[i]) if only_body else highs[i]
+            bottom = min(closes[i], opens[i]) if only_body else lows[i]
+            return BreakerBlock(i, top=top, bottom=bottom, direction="long")
+        elif direction == "short" and is_red:
+            top = max(closes[i], opens[i]) if only_body else highs[i]
+            bottom = min(closes[i], opens[i]) if only_body else lows[i]
+            return BreakerBlock(i, top=top, bottom=bottom, direction="short")
+
+    return None
 
 
 def find_order_blocks(df: pd.DataFrame, min_displacement_ratio: float = 0.5) -> List[OrderBlock]:
@@ -244,12 +355,24 @@ def detect_sweep_and_mss(
     ATR-like measure over the prior 14 candles). A weak, barely-there close
     is a much lower-conviction break of structure than one with genuine
     displacement behind it. Set to 0 to disable this filter.
+
+    MSS confirmation uses the proper BOS-vs-MSS state machine (ported from
+    the "Multi Timeframe Break of Structure & Market Structure Shift" Pine
+    Script by Lenny_Kiruthu): a structure break only counts as a genuine
+    MSS if it REVERSES the direction of the prior structure break. A break
+    that continues the same direction as the prior one is a BOS
+    (continuation), not an MSS, and does NOT confirm a reversal trade here.
     """
     highs, lows, closes = df["High"].values, df["Low"].values, df["Close"].values
     opens = df["Open"].values if "Open" in df.columns else closes.copy()
     result = {
         "sweep_detected": False, "sweep_side": None, "sweep_index": None, "sweep_price": None,
         "mss_confirmed": False, "mss_index": None, "direction": None, "invalidated": False,
+    }
+
+    structure_breaks = classify_structure_breaks(df, swings, use_high_low=True)
+    mss_by_index_direction = {
+        (b["index"], b["direction"]): True for b in structure_breaks if b["type"] == "MSS"
     }
 
     for i in range(search_start, len(df)):
@@ -294,17 +417,13 @@ def detect_sweep_and_mss(
             has_displacement = (avg_range == 0) or (body_size >= min_displacement_ratio * avg_range)
 
             if result["sweep_side"] == "low":
-                prior_highs = [s for s in swings if s.kind == "high" and s.index < i]
-                if prior_highs:
-                    structure_level = prior_highs[-1].price
-                    if closes[i] > structure_level and has_displacement:
-                        result.update(mss_confirmed=True, mss_index=i, direction="long")
+                # a low sweep sets up a LONG reversal - needs a genuine MSS
+                # (not just BOS continuation) breaking to the upside here
+                if (i, "long") in mss_by_index_direction and has_displacement:
+                    result.update(mss_confirmed=True, mss_index=i, direction="long")
             else:
-                prior_lows = [s for s in swings if s.kind == "low" and s.index < i]
-                if prior_lows:
-                    structure_level = prior_lows[-1].price
-                    if closes[i] < structure_level and has_displacement:
-                        result.update(mss_confirmed=True, mss_index=i, direction="short")
+                if (i, "short") in mss_by_index_direction and has_displacement:
+                    result.update(mss_confirmed=True, mss_index=i, direction="short")
             # NOTE: no `break` here anymore - we keep scanning to the end of the
             # data so a later opposite sweep can still override this if it happens
 
@@ -775,6 +894,18 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
         entry_price = intraday_after["Close"].values[entry_idx]
 
     confluence = check_fvg_breaker_confluence(entry_idx, state.direction, fvgs, breakers, order_blocks=order_blocks)
+
+    # CRT-specific improvement: also check for a precise, trade-specific
+    # breaker block (LuxAlgo's "Breaker Blocks with Signals" definition -
+    # the first correctly-colored candle scanning forward from the sweep
+    # toward the MSS break, rather than just a nearby candle). This is
+    # additive - it can add "Precise Breaker Block" as extra confluence,
+    # or on its own satisfy the confluence requirement even if the
+    # simpler FVG/breaker/order-block checks above found nothing.
+    precise_breaker = find_precise_breaker_block(intraday_after, state.sweep_index, state.mss_index, state.direction)
+    if precise_breaker is not None:
+        confluence.append("Precise Breaker Block")
+
     if not confluence:
         state.status = "mss_confirmed"
         state.notes = (
