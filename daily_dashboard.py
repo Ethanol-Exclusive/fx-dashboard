@@ -104,6 +104,17 @@ def send_telegram_alert(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram not configured (missing TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID secrets) - skipping alert.")
         return
+
+    # Weekday-only guard (belt-and-suspenders alongside the cron schedule's
+    # own weekday restriction) - no weekend trading, so never alert on a
+    # Saturday or Sunday, even if the workflow gets triggered manually or
+    # runs late into a weekend boundary. Uses NY time since that's the
+    # relevant trading calendar for these setups.
+    ny_now = pd.Timestamp.now(tz="America/New_York")
+    if ny_now.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        print(f"Skipping Telegram alert - it's the weekend in NY ({ny_now.strftime('%A')}), no weekend trading.")
+        return
+
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         resp = requests.post(url, data={
