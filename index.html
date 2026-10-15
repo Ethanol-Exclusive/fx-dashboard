@@ -55,7 +55,7 @@
 <body>
 <header>
   <h1>Exclusive FX — Daily Setup Dashboard</h1>
-  <div class="ts">Updated 2026-10-15 14:09</div>
+  <div class="ts">Updated 2026-10-15 18:14</div>
   <a class="refresh-btn" href="https://github.com/Ethanol-Exclusive/fx-dashboard/actions/workflows/update-dashboard.yml" target="_blank" rel="noopener">
     ⟳ Refresh Analysis
   </a>
@@ -79,11 +79,16 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
       <div class="range">5AM NY Candle: 4130.2450 — 4160.6400</div>
       
-      <div class="notes">5AM NY candle range marked (5AM-9AM NY) - waiting for the candle to finish printing / for NY session entries.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>5AM NY Candle HIGH</b></div>
+          <div class="row"><span>Sweep price</span><b>4162.0700</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
     </div>
@@ -94,22 +99,37 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">Daily PDH/PDL</span>
-        <span class="status-pill" style="background:#555">FILTERED — no entry</span>
+        <span class="status-pill" style="background:#1e9e5a">SIGNAL LIVE ⚠</span>
       </div>
       <div class="range">Previous Day: 29896.0000 — 30704.7000</div>
       
-      <div class="notes">MSS confirmed LONG, but price broke outside the PDH/PDL range before confirming - waiting for price to return inside the range before entering.</div>
+        <div class="levels">
+          <div class="dir" style="color:#1e9e5a">BUY</div>
+          <div class="row" style="color:#c9a227"><span>⚠ Against 4H trend</span><b></b></div>
+          <div class="row"><span>Entry</span><b>29896.4000</b></div>
+          <div class="row"><span>Stop Loss</span><b>29880.0000</b></div>
+          <div class="row"><span>TP1 (→ move SL to BE)</span><b>—</b></div>
+          <div class="row"><span>TP2</span><b>—</b></div>
+          <div class="row"><span>Confluence</span><b>FVG, Breaker Block, Order Block</b></div>
+        </div>
+        
+      <div class="notes">MSS confirmed LONG [AGAINST TREND]. Entry ~29896.4000, SL 29880.0000, TP1 None, TP2 None. Confluence: FVG, Breaker Block, Order Block.</div>
     </div>
     
       
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
       <div class="range">5AM NY Candle: 29529.6000 — 29716.0000</div>
       
-      <div class="notes">5AM NY candle range marked (5AM-9AM NY) - waiting for the candle to finish printing / for NY session entries.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>5AM NY Candle LOW</b></div>
+          <div class="row"><span>Sweep price</span><b>29501.4000</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
     </div>
@@ -126,7 +146,7 @@
       
         <div class="levels">
           <div class="row"><span>Swept</span><b>Previous Day HIGH</b></div>
-          <div class="row"><span>Sweep price</span><b>1.1216</b></div>
+          <div class="row"><span>Sweep price</span><b>1.1212</b></div>
         </div>
         
       <div class="notes">Sweep of PDH detected - waiting for MSS confirmation.</div>
@@ -140,7 +160,7 @@
       </div>
       <div class="range">5AM NY Candle: 1.1188 — 1.1228</div>
       
-      <div class="notes">5AM NY candle range marked (5AM-9AM NY) - waiting for the candle to finish printing / for NY session entries.</div>
+      <div class="notes">No sweep of the 5AM NY candle range yet.</div>
     </div>
     
     </div>
@@ -151,13 +171,13 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">Daily PDH/PDL</span>
-        <span class="status-pill" style="background:#1e9e5a">SIGNAL LIVE ⚠</span>
+        <span class="status-pill" style="background:#1e9e5a">SIGNAL LIVE</span>
       </div>
       <div class="range">Previous Day: 158.0480 — 158.9510</div>
       
         <div class="levels">
           <div class="dir" style="color:#1e9e5a">BUY</div>
-          <div class="row" style="color:#c9a227"><span>⚠ Against 4H trend</span><b></b></div>
+          
           <div class="row"><span>Entry</span><b>158.0320</b></div>
           <div class="row"><span>Stop Loss</span><b>158.0390</b></div>
           <div class="row"><span>TP1 (→ move SL to BE)</span><b>158.0500</b></div>
@@ -165,18 +185,23 @@
           <div class="row"><span>Confluence</span><b>FVG, Breaker Block</b></div>
         </div>
         
-      <div class="notes">MSS confirmed LONG [AGAINST TREND]. Entry ~158.0320, SL 158.0390, TP1 158.05, TP2 None. Confluence: FVG, Breaker Block.</div>
+      <div class="notes">MSS confirmed LONG. Entry ~158.0320, SL 158.0390, TP1 158.05, TP2 None. Confluence: FVG, Breaker Block.</div>
     </div>
     
       
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
       <div class="range">5AM NY Candle: 157.6740 — 158.1880</div>
       
-      <div class="notes">5AM NY candle range marked (5AM-9AM NY) - waiting for the candle to finish printing / for NY session entries.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>5AM NY Candle HIGH</b></div>
+          <div class="row"><span>Sweep price</span><b>158.2100</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
     </div>
@@ -212,7 +237,7 @@
       </div>
       <div class="range">5AM NY Candle: 1.3231 — 1.3276</div>
       
-      <div class="notes">5AM NY candle range marked (5AM-9AM NY) - waiting for the candle to finish printing / for NY session entries.</div>
+      <div class="notes">No sweep of the 5AM NY candle range yet.</div>
     </div>
     
     </div>
@@ -223,16 +248,21 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">Daily PDH/PDL</span>
-        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
+        <span class="status-pill" style="background:#1e9e5a">SIGNAL LIVE</span>
       </div>
       <div class="range">Previous Day: 81398.0000 — 84071.5000</div>
       
         <div class="levels">
-          <div class="row"><span>Swept</span><b>Previous Day LOW</b></div>
-          <div class="row"><span>Sweep price</span><b>81384.0000</b></div>
+          <div class="dir" style="color:#1e9e5a">BUY</div>
+          
+          <div class="row"><span>Entry</span><b>81405.0000</b></div>
+          <div class="row"><span>Stop Loss</span><b>81384.0000</b></div>
+          <div class="row"><span>TP1 (→ move SL to BE)</span><b>81493.0000</b></div>
+          <div class="row"><span>TP2</span><b>81641.5000</b></div>
+          <div class="row"><span>Confluence</span><b>FVG, Breaker Block, Order Block</b></div>
         </div>
         
-      <div class="notes">Sweep of PDL detected - waiting for MSS confirmation.</div>
+      <div class="notes">MSS confirmed LONG. Entry ~81405.0000, SL 81384.0000, TP1 81493.0, TP2 81641.5. Confluence: FVG, Breaker Block, Order Block.</div>
     </div>
     
       
@@ -244,8 +274,8 @@
       <div class="range">4AM NY Candle: 80724.5000 — 81493.0000</div>
       
         <div class="levels">
-          <div class="row"><span>Swept</span><b>4AM NY Candle LOW</b></div>
-          <div class="row"><span>Sweep price</span><b>80471.5000</b></div>
+          <div class="row"><span>Swept</span><b>4AM NY Candle HIGH</b></div>
+          <div class="row"><span>Sweep price</span><b>81529.0000</b></div>
         </div>
         
       <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
@@ -275,11 +305,16 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
       <div class="range">5AM NY Candle: 0.6900 — 0.6931</div>
       
-      <div class="notes">5AM NY candle range marked (5AM-9AM NY) - waiting for the candle to finish printing / for NY session entries.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>5AM NY Candle LOW</b></div>
+          <div class="row"><span>Sweep price</span><b>0.6896</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
     </div>
@@ -296,7 +331,7 @@
       
         <div class="levels">
           <div class="row"><span>Swept</span><b>Previous Day HIGH</b></div>
-          <div class="row"><span>Sweep price</span><b>51976.0000</b></div>
+          <div class="row"><span>Sweep price</span><b>51973.0000</b></div>
         </div>
         
       <div class="notes">Sweep of PDH detected - waiting for MSS confirmation.</div>
@@ -306,11 +341,16 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
       <div class="range">5AM NY Candle: 51698.5000 — 51917.0000</div>
       
-      <div class="notes">5AM NY candle range marked (5AM-9AM NY) - waiting for the candle to finish printing / for NY session entries.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>5AM NY Candle HIGH</b></div>
+          <div class="row"><span>Sweep price</span><b>51976.0000</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
     </div>
@@ -342,11 +382,16 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
       <div class="range">5AM NY Candle: 1.4193 — 1.4222</div>
       
-      <div class="notes">5AM NY candle range marked (5AM-9AM NY) - waiting for the candle to finish printing / for NY session entries.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>5AM NY Candle LOW</b></div>
+          <div class="row"><span>Sweep price</span><b>1.4192</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
     </div>
@@ -372,7 +417,7 @@
       </div>
       <div class="range">5AM NY Candle: 0.5591 — 0.5616</div>
       
-      <div class="notes">5AM NY candle range marked (5AM-9AM NY) - waiting for the candle to finish printing / for NY session entries.</div>
+      <div class="notes">No sweep of the 5AM NY candle range yet.</div>
     </div>
     
     </div>
@@ -383,16 +428,21 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">Daily PDH/PDL</span>
-        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
+        <span class="status-pill" style="background:#1e9e5a">SIGNAL LIVE</span>
       </div>
       <div class="range">Previous Day: 25211.0000 — 25476.5000</div>
       
         <div class="levels">
-          <div class="row"><span>Swept</span><b>Previous Day LOW</b></div>
-          <div class="row"><span>Sweep price</span><b>25205.0000</b></div>
+          <div class="dir" style="color:#1e9e5a">BUY</div>
+          
+          <div class="row"><span>Entry</span><b>25347.0000</b></div>
+          <div class="row"><span>Stop Loss</span><b>25205.0000</b></div>
+          <div class="row"><span>TP1 (→ move SL to BE)</span><b>—</b></div>
+          <div class="row"><span>TP2</span><b>—</b></div>
+          <div class="row"><span>Confluence</span><b>FVG, Breaker Block, Order Block</b></div>
         </div>
         
-      <div class="notes">Sweep of PDL detected - waiting for MSS confirmation.</div>
+      <div class="notes">MSS confirmed LONG. Entry ~25347.0000, SL 25205.0000, TP1 None, TP2 None. Confluence: FVG, Breaker Block, Order Block.</div>
     </div>
     
       
@@ -403,7 +453,7 @@
       </div>
       <div class="range">5AM NY Candle: 25168.0000 — 25300.0000</div>
       
-      <div class="notes">5AM NY candle range marked (5AM-9AM NY) - waiting for the candle to finish printing / for NY session entries.</div>
+      <div class="notes">No sweep of the 5AM NY candle range yet.</div>
     </div>
     
     </div>
