@@ -1,5 +1,12 @@
 {
+  "NAS100|5m_MSS|short|27377.10000": true,
   "EURUSD|Daily PDH/PDL|long|1.10261": true,
+  "USDJPY|5m_MSS|long|159.48000": true,
   "GBPUSD|Daily PDH/PDL|long|1.32131": true,
-  "USDCAD|Daily PDH/PDL|short|1.42725": true
+  "BTCUSD|5m_MSS|long|65013.50000": true,
+  "AUDUSD|5m_MSS|long|0.67426": true,
+  "US30|5m_BOS|short|51606.60000": true,
+  "USDCAD|Daily PDH/PDL|short|1.42725": true,
+  "NZDUSD|5m_MSS|long|0.55038": true,
+  "GER30|5m_BOS|short|26621.44922": true
 }
