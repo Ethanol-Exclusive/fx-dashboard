@@ -935,3 +935,565 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
         f"Confluence: {', '.join(state.confluence) if state.confluence else 'none'}."
     )
     return state
+
+
+# --------------------------------------------------------------------------- #
+# Major Liquidity Setup (Setup C)
+# --------------------------------------------------------------------------- #
+#
+# This setup identifies "major liquidity grab" scenarios:
+#
+#   1. Price forms a recognisable consolidation range (a cluster of candles
+#      whose highs/lows stay within a relatively tight band). This creates a
+#      pool of resting buy orders above the range high (equal highs / stop
+#      orders) and resting sell orders below the range low.
+#
+#   2. Price spikes THROUGH one side of that range on a wick, then CLOSES
+#      back inside (or rapidly reverses) — this is the liquidity grab. It
+#      represents smart money sweeping the resting orders before reversing.
+#
+#   3. After the grab an MSS (Market Structure Shift) in the OPPOSITE
+#      direction confirms the reversal. Entry, SL and TP logic then mirrors
+#      the existing Daily CRT / NY CRT rules.
+#
+# Best timeframes: 15m, 30m, 1h — per user specification and because on
+# lower timeframes (5m) the consolidations are too noisy, and on higher
+# timeframes (4h+) a "grab" looks like a normal daily candle.
+#
+# Consolidation detection logic
+# ─────────────────────────────
+# We walk back from the most recent candle and collect a window of candles
+# whose highs cluster within `range_threshold_pct` percent of one another,
+# and whose lows likewise cluster, for at least `min_consolidation_candles`.
+# The consolidation range = max(cluster highs) / min(cluster lows).
+# A "major" level is one that has been TESTED multiple times (≥ 2 touches
+# on either the high or the low side), making it a visually obvious level
+# that the market repeatedly respected — these are the levels where the
+# most resting liquidity builds up.
+#
+# After the consolidation is identified, we scan for a candle that:
+#   - Wicks BEYOND the range high or low by more than a minimal amount
+#   - Closes BACK INSIDE the range (classic wick-sweep / liquidity grab)
+#     OR closes beyond the range but reverses sharply enough in the next
+#     1-3 candles that price is back inside (a brief spike-through).
+#
+# Once a grab is detected, the same `detect_sweep_and_mss` function used
+# by the other setups confirms the MSS, and entry/SL/TP are computed with
+# the same helpers.
+
+
+def find_consolidation_range(
+    df: pd.DataFrame,
+    lookback: int = 60,
+    min_candles: int = 8,
+    range_threshold_pct: float = 0.5,
+    min_touches: int = 2,
+) -> Optional[dict]:
+    """
+    Scans the last `lookback` candles for a consolidation zone — a band
+    of candles whose highs and lows stay within `range_threshold_pct`%
+    of each other.
+
+    Returns a dict:
+        {
+          "high": float,      # top of the consolidation range
+          "low":  float,      # bottom of the consolidation range
+          "start_index": int, # first candle of the consolidation (in df)
+          "end_index": int,   # last candle before the grab candle
+          "high_touches": int,
+          "low_touches":  int,
+        }
+    or None if no suitable consolidation was found.
+
+    Strategy:
+      - Slide a window of `min_candles` → `lookback` candles from recent
+        history. For each window, compute the range (max_high / min_low).
+      - Accept the window if its range is tight (< range_threshold_pct %)
+        AND each of the high and low has been approached (within 10% of
+        the range height) at least `min_touches` times.
+      - Of all qualifying windows, prefer the one CLOSEST to the present
+        (most recent) so we surface the latest relevant consolidation.
+    """
+    if len(df) < min_candles + 5:
+        return None
+
+    highs = df["High"].values
+    lows = df["Low"].values
+    n = len(df)
+
+    # Only look within the last `lookback` candles
+    start_scan = max(0, n - lookback)
+
+    best = None
+    best_end = -1  # prefer the most-recent qualifying window
+
+    # Try every window of at least min_candles candles in the lookback region
+    for end in range(start_scan + min_candles, n):
+        for start in range(start_scan, end - min_candles + 1):
+            window_h = highs[start:end]
+            window_l = lows[start:end]
+            range_high = window_h.max()
+            range_low = window_l.min()
+
+            if range_low == 0:
+                continue
+
+            # Check tightness
+            range_pct = (range_high - range_low) / range_low * 100
+            if range_pct > range_threshold_pct:
+                continue
+
+            range_height = range_high - range_low
+            touch_band = range_height * 0.15  # within 15% of range height = "touching"
+
+            high_touches = int(np.sum(window_h >= range_high - touch_band))
+            low_touches = int(np.sum(window_l <= range_low + touch_band))
+
+            if high_touches < min_touches or low_touches < min_touches:
+                continue
+
+            # Prefer the most recent qualifying window
+            if end > best_end:
+                best_end = end
+                best = {
+                    "high": float(range_high),
+                    "low": float(range_low),
+                    "start_index": start,
+                    "end_index": end - 1,
+                    "high_touches": high_touches,
+                    "low_touches": low_touches,
+                }
+
+    return best
+
+
+def detect_liquidity_grab(
+    df: pd.DataFrame,
+    range_high: float,
+    range_low: float,
+    consolidation_end: int,
+    min_wick_pct: float = 0.1,
+    max_grab_candles_lookforward: int = 10,
+) -> Optional[dict]:
+    """
+    After a consolidation range is identified, scans the candles AFTER
+    consolidation_end for a liquidity grab:
+
+      - A wick that extends beyond the range high or low by at least
+        `min_wick_pct`% of the range height
+      - That closes back INSIDE the range (wick-only sweep), OR
+        closes slightly beyond but price returns inside within
+        `max_grab_candles_lookforward` candles.
+
+    Returns:
+        {
+          "grab_index": int,
+          "grab_side":  "high" | "low",
+          "grab_extreme": float,   # the wick tip price
+          "return_index": int,     # first close back inside the range
+        }
+    or None if no grab found.
+    """
+    if consolidation_end + 1 >= len(df):
+        return None
+
+    highs = df["High"].values
+    lows = df["Low"].values
+    closes = df["Close"].values
+    range_height = range_high - range_low
+    if range_height <= 0:
+        return None
+
+    min_extension = range_height * min_wick_pct
+
+    scan_end = min(len(df), consolidation_end + 1 + max_grab_candles_lookforward * 3)
+
+    for i in range(consolidation_end + 1, scan_end):
+        # --- HIGH side grab ---
+        if highs[i] > range_high + min_extension:
+            # Check if close is back inside (wick sweep)
+            if closes[i] <= range_high:
+                return {
+                    "grab_index": i,
+                    "grab_side": "high",
+                    "grab_extreme": float(highs[i]),
+                    "return_index": i,
+                }
+            # Or if price returns inside in the next few candles
+            for j in range(i + 1, min(i + max_grab_candles_lookforward + 1, len(df))):
+                if closes[j] <= range_high:
+                    return {
+                        "grab_index": i,
+                        "grab_side": "high",
+                        "grab_extreme": float(highs[i]),
+                        "return_index": j,
+                    }
+
+        # --- LOW side grab ---
+        if lows[i] < range_low - min_extension:
+            if closes[i] >= range_low:
+                return {
+                    "grab_index": i,
+                    "grab_side": "low",
+                    "grab_extreme": float(lows[i]),
+                    "return_index": i,
+                }
+            for j in range(i + 1, min(i + max_grab_candles_lookforward + 1, len(df))):
+                if closes[j] >= range_low:
+                    return {
+                        "grab_index": i,
+                        "grab_side": "low",
+                        "grab_extreme": float(lows[i]),
+                        "return_index": j,
+                    }
+
+    return None
+
+
+def analyze_major_liquidity_setup(
+    df: pd.DataFrame,
+    symbol: str,
+    timeframe_label: str = "15m",
+    consolidation_lookback: int = 80,
+    min_consolidation_candles: int = 8,
+    range_threshold_pct: float = 0.5,
+    min_touches: int = 2,
+) -> SetupState:
+    """
+    Full Major Liquidity setup analysis for a single timeframe DataFrame.
+
+    1. Identify the most recent consolidation range.
+    2. Detect a liquidity grab (wick sweep of the range high or low with
+       price returning inside).
+    3. Confirm an MSS in the opposite direction.
+    4. Compute entry / SL / TP using the same logic as the other setups.
+
+    Returns a SetupState with setup_name = "Major Liquidity ({timeframe_label})".
+    """
+    setup_name = f"Major Liquidity ({timeframe_label})"
+
+    if len(df) < min_consolidation_candles + 10:
+        return SetupState(setup_name, symbol, float("nan"), float("nan"), "Consolidation Range",
+                          status="no_data", notes="Not enough data.")
+
+    # Work on a reset-index copy so array indices stay consistent
+    df_work = df.reset_index() if not isinstance(df.index, pd.RangeIndex) else df.copy()
+
+    consol = find_consolidation_range(
+        df_work,
+        lookback=consolidation_lookback,
+        min_candles=min_consolidation_candles,
+        range_threshold_pct=range_threshold_pct,
+        min_touches=min_touches,
+    )
+    if consol is None:
+        return SetupState(setup_name, symbol, float("nan"), float("nan"), "Consolidation Range",
+                          status="waiting",
+                          notes="No major consolidation zone identified on this timeframe yet.")
+
+    range_high = consol["high"]
+    range_low = consol["low"]
+    consol_end = consol["end_index"]
+
+    state = SetupState(
+        setup_name, symbol, range_high, range_low,
+        f"Consolidation Range ({consol['high_touches']}H/{consol['low_touches']}L touches)",
+    )
+
+    grab = detect_liquidity_grab(
+        df_work, range_high, range_low, consol_end,
+        min_wick_pct=0.05,
+        max_grab_candles_lookforward=8,
+    )
+    if grab is None:
+        state.status = "waiting"
+        state.notes = (
+            f"Consolidation zone identified: {range_low:.4f} — {range_high:.4f} "
+            f"({consol['high_touches']} high touches, {consol['low_touches']} low touches). "
+            f"Watching for a liquidity grab (wick sweep of either side)."
+        )
+        return state
+
+    # Treat the grab as a sweep in detect_sweep_and_mss terms:
+    # search for an MSS from the grab index onward
+    state.sweep_detected = True
+    state.sweep_side = grab["grab_side"]
+    state.sweep_index = grab["grab_index"]
+    state.sweep_price = grab["grab_extreme"]
+
+    swings = find_swings(df_work, lookback=3)
+    scan = detect_sweep_and_mss(
+        df_work, range_high, range_low, swings,
+        search_start=max(0, grab["return_index"] - 2),
+    )
+
+    # If detect_sweep_and_mss found a fresh sweep + MSS in the region,
+    # use it; otherwise fall back to our grab info + no MSS yet
+    if scan["sweep_detected"] and scan["mss_confirmed"]:
+        state.sweep_index = scan["sweep_index"]
+        state.sweep_price = scan["sweep_price"]
+        state.sweep_side = scan["sweep_side"]
+        state.mss_confirmed = True
+        state.mss_index = scan["mss_index"]
+        state.direction = scan["direction"]
+    elif not scan["mss_confirmed"]:
+        # We know there was a grab but no MSS yet
+        state.status = "sweep_only"
+        side_label = "HIGH" if grab["grab_side"] == "high" else "LOW"
+        state.notes = (
+            f"Liquidity grab of range {side_label} detected at {grab['grab_extreme']:.4f} "
+            f"(range: {range_low:.4f} — {range_high:.4f}). "
+            f"Waiting for MSS confirmation of reversal."
+        )
+        return state
+
+    # --- MSS confirmed ---
+    # HTF bias from the data we have (resample to 4H equivalent)
+    try:
+        df_4h_bias = df.resample("4h").agg(
+            {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
+        ).dropna()
+        bias = compute_htf_bias(df_4h_bias)
+    except Exception:
+        bias = "neutral"
+    state.against_trend = not bias_allows_direction(bias, state.direction)
+
+    fvgs = find_fvgs(df_work)
+    breakers = find_breaker_blocks(df_work, swings)
+    order_blocks = find_order_blocks(df_work)
+
+    # Entry: inside the consolidation range (same logic as CRT)
+    reentry_idx, reentry_price = find_entry_after_range_reentry(
+        df_work, state.mss_index, state.direction, range_low, range_high
+    )
+
+    if reentry_idx == "pending":
+        state.status = "mss_confirmed"
+        state.notes = (
+            f"MSS confirmed {state.direction.upper()} after liquidity grab at {state.sweep_price:.4f}. "
+            f"Price broke outside the consolidation range before confirming — "
+            f"waiting for price to return inside the range before entering."
+        )
+        return state
+    elif reentry_idx is not None:
+        entry_idx = reentry_idx
+        entry_price = reentry_price
+    else:
+        entry_idx = state.mss_index
+        entry_price = df_work["Close"].values[entry_idx]
+
+    confluence = check_fvg_breaker_confluence(entry_idx, state.direction, fvgs, breakers, order_blocks=order_blocks)
+
+    # Also check for precise breaker block (same improvement as NY CRT)
+    precise_breaker = find_precise_breaker_block(
+        df_work, state.sweep_index, state.mss_index, state.direction
+    )
+    if precise_breaker is not None:
+        confluence.append("Precise Breaker Block")
+
+    if not confluence:
+        state.status = "mss_confirmed"
+        state.notes = (
+            f"MSS confirmed {state.direction.upper()} after liquidity grab at {state.sweep_price:.4f}. "
+            f"No FVG or breaker block confluence yet — waiting for confluence before entering."
+        )
+        return state
+
+    state.entry_price = float(entry_price)
+    state.stop_loss = state.sweep_price
+    state.confluence = confluence
+
+    liquidity = nearest_unswept_liquidity(
+        entry_price, state.direction, swings,
+        session_high=range_high, session_low=range_low,
+        up_to_index=entry_idx,
+    )
+    if len(liquidity) >= 1:
+        state.tp1 = liquidity[0].price
+    if len(liquidity) >= 2:
+        state.tp2 = liquidity[1].price
+
+    state.status = "mss_confirmed"
+    trend_tag = " [AGAINST TREND]" if state.against_trend else ""
+    state.notes = (
+        f"MSS confirmed {state.direction.upper()}{trend_tag} after major liquidity grab at "
+        f"{state.sweep_price:.4f} (range: {range_low:.4f} — {range_high:.4f}). "
+        f"Entry ~{state.entry_price:.4f}, SL {state.stop_loss:.4f}, "
+        f"TP1 {state.tp1}, TP2 {state.tp2}. "
+        f"Confluence: {', '.join(state.confluence) if state.confluence else 'none'}."
+    )
+    return state
+
+
+def run_major_liquidity_across_timeframes(
+    df_15m: pd.DataFrame,
+    df_30m: pd.DataFrame,
+    df_1h: pd.DataFrame,
+    symbol: str,
+) -> SetupState:
+    """
+    Runs the Major Liquidity setup on 15m, 30m, and 1h timeframes and
+    returns the highest-priority result. Priority order:
+      mss_confirmed (with entry) > sweep_only > mss_confirmed (no entry yet) > waiting > no_data
+    The winning timeframe's label is included in the setup_name.
+    """
+    def _score(s: SetupState) -> int:
+        if s.status == "mss_confirmed" and s.entry_price is not None:
+            return 4
+        if s.status == "sweep_only":
+            return 3
+        if s.status == "mss_confirmed":
+            return 2
+        if s.status == "waiting":
+            return 1
+        return 0
+
+    candidates = []
+    for df, tf_label in [
+        (df_15m, "15m"),
+        (df_30m, "30m"),
+        (df_1h,  "1h"),
+    ]:
+        if df is not None and not df.empty:
+            try:
+                result = analyze_major_liquidity_setup(df, symbol, timeframe_label=tf_label)
+                candidates.append(result)
+            except Exception as e:
+                # Don't let one timeframe failure kill the others
+                err_state = SetupState(
+                    f"Major Liquidity ({tf_label})", symbol,
+                    float("nan"), float("nan"), "Consolidation Range",
+                    status="no_data", notes=f"Analysis error: {e}",
+                )
+                candidates.append(err_state)
+
+    if not candidates:
+        return SetupState("Major Liquidity", symbol, float("nan"), float("nan"),
+                          "Consolidation Range", status="no_data",
+                          notes="No data available for any timeframe.")
+
+    return max(candidates, key=_score)
+
+
+# --------------------------------------------------------------------------- #
+# 5-minute MSS/BOS detection for NY CRT setups
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class MSSSignal:
+    """A lightweight signal fired when a 5m MSS or BOS is detected during
+    the NY session, as an early-entry / alert companion to the NY CRT setup."""
+    symbol: str
+    break_type: str          # "MSS" or "BOS"
+    direction: Direction
+    break_index: int
+    break_price: float       # close price at the break candle
+    break_time: Optional[pd.Timestamp] = None
+    notes: str = ""
+
+
+def detect_5m_mss_bos(
+    df_5m: pd.DataFrame,
+    symbol: str,
+    crt_range_high: Optional[float] = None,
+    crt_range_low: Optional[float] = None,
+) -> Optional[MSSSignal]:
+    """
+    Scans the 5-minute intraday data for the most recent MSS or BOS
+    during the current NY session (9AM–5PM NY).
+
+    If `crt_range_high` and `crt_range_low` are provided (from the NY CRT
+    setup), only MSS/BOS breaks that occur AFTER a sweep of the CRT range
+    are returned — this filters to breaks that are contextually relevant to
+    the CRT trade setup. Without them, any MSS/BOS during the session is
+    returned.
+
+    Returns the MOST RECENT qualifying MSS (preferred) or BOS, or None.
+    """
+    if df_5m is None or df_5m.empty or len(df_5m) < 10:
+        return None
+
+    # Filter to NY session today only
+    now_ny = pd.Timestamp.now(tz=NY_TZ)
+    session_start_ny = now_ny.normalize().replace(hour=9)
+    session_end_ny = now_ny.normalize().replace(hour=17)
+
+    idx = df_5m.index
+    if idx.tz is None:
+        idx_ny = idx.tz_localize("UTC").tz_convert(NY_TZ)
+    else:
+        idx_ny = idx.tz_convert(NY_TZ)
+
+    # Is it currently the NY session?
+    current_hour = now_ny.hour + now_ny.minute / 60
+    if not (9 <= current_hour < 17):
+        return None
+
+    session_mask = (idx_ny >= session_start_ny) & (idx_ny <= now_ny)
+    df_session = df_5m[session_mask]
+    if len(df_session) < 8:
+        return None
+
+    df_work = df_session.reset_index()
+    times = df_session.index
+
+    swings = find_swings(df_work, lookback=3)
+    breaks = classify_structure_breaks(df_work, swings, use_high_low=True)
+
+    if not breaks:
+        return None
+
+    # Optionally filter to breaks that follow a CRT range sweep
+    if crt_range_high is not None and crt_range_low is not None:
+        highs_arr = df_work["High"].values
+        lows_arr = df_work["Low"].values
+        closes_arr = df_work["Close"].values
+
+        # Find the last sweep of the CRT range (wick through, close inside)
+        last_sweep_idx = None
+        for i in range(len(df_work)):
+            if lows_arr[i] < crt_range_low and closes_arr[i] > crt_range_low:
+                last_sweep_idx = i
+            elif highs_arr[i] > crt_range_high and closes_arr[i] < crt_range_high:
+                last_sweep_idx = i
+
+        if last_sweep_idx is not None:
+            breaks = [b for b in breaks if b["index"] > last_sweep_idx]
+
+    if not breaks:
+        return None
+
+    # Prefer MSS over BOS; among same type, prefer most recent
+    mss_breaks = [b for b in breaks if b["type"] == "MSS"]
+    bos_breaks = [b for b in breaks if b["type"] == "BOS"]
+
+    chosen = None
+    if mss_breaks:
+        chosen = mss_breaks[-1]  # most recent MSS
+    elif bos_breaks:
+        chosen = bos_breaks[-1]  # fall back to most recent BOS
+
+    if chosen is None:
+        return None
+
+    idx_in_session = chosen["index"]
+    closes_arr = df_work["Close"].values
+    break_price = float(closes_arr[idx_in_session])
+    break_time = times[idx_in_session] if idx_in_session < len(times) else None
+
+    context = ""
+    if crt_range_high is not None and crt_range_low is not None:
+        context = f" (after CRT range sweep: {crt_range_low:.4f}–{crt_range_high:.4f})"
+
+    return MSSSignal(
+        symbol=symbol,
+        break_type=chosen["type"],
+        direction=chosen["direction"],
+        break_index=idx_in_session,
+        break_price=break_price,
+        break_time=break_time,
+        notes=(
+            f"5m {chosen['type']} {chosen['direction'].upper()}{context}. "
+            f"Break close: {break_price:.4f}."
+        ),
+    )
