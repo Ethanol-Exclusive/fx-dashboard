@@ -619,7 +619,7 @@ def build_dashboard():
             key = mss_signal_key(mss_sig)
             current_signals[key] = True
             if key not in previous_signals:
-                print(f"New 5m {mss_sig.break_type} detected for {name} - sending Telegram alert")
+                print(f"New 5m confirmed signal detected for {name} ({mss_sig.direction}) - sending Telegram alert")
                 send_telegram_alert(build_mss_alert_message(mss_sig))
 
     save_signals(current_signals)
