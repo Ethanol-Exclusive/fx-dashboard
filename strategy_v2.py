@@ -1376,20 +1376,163 @@ def run_major_liquidity_across_timeframes(
 
 
 # --------------------------------------------------------------------------- #
-# 5-minute MSS/BOS detection for NY CRT setups
+# 5-minute fully-confirmed signal for NY CRT setups
 # --------------------------------------------------------------------------- #
+#
+# A signal is only fired when ALL of the following are met — identical
+# requirements to the other two setups, just evaluated on 5m data:
+#
+#   1. The NY CRT range (5AM 4H candle) must be defined and valid.
+#   2. A sweep of the CRT range high or low must have occurred on 5m
+#      (wick through, close back inside — same definition as Setup B).
+#   3. An MSS in the OPPOSITE direction must confirm the reversal.
+#   4. At least one confluence factor (FVG, Breaker Block, Precise Breaker
+#      Block, or Order Block) must be present near the entry point.
+#   5. The entry must be INSIDE the CRT range (same re-entry rule).
+#
+# Nothing is sent until every one of those gates is cleared.
+
 
 @dataclass
 class MSSSignal:
-    """A lightweight signal fired when a 5m MSS or BOS is detected during
-    the NY session, as an early-entry / alert companion to the NY CRT setup."""
+    """
+    A fully-confirmed 5m signal for the NY CRT setup.
+    All fields mirror SetupState so the alert message and dashboard card
+    can display the same level of detail as Setup A and Setup B signals.
+    """
     symbol: str
-    break_type: str          # "MSS" or "BOS"
     direction: Direction
-    break_index: int
-    break_price: float       # close price at the break candle
-    break_time: Optional[pd.Timestamp] = None
+    entry_price: float
+    stop_loss: float
+    tp1: Optional[float]
+    tp2: Optional[float]
+    confluence: List[str]
+    sweep_price: float          # the wick extreme (SL anchor)
+    sweep_side: str             # "high" or "low"
+    crt_range_high: float
+    crt_range_low: float
+    signal_time: Optional[pd.Timestamp] = None
+    against_trend: bool = False
     notes: str = ""
+
+
+def analyze_ny_crt_5m(
+    df_5m: pd.DataFrame,
+    crt_range_high: float,
+    crt_range_low: float,
+    symbol: str,
+    htf_bias: str = "neutral",
+) -> Optional[MSSSignal]:
+    """
+    Runs the full NY CRT confirmation pipeline on 5-minute data.
+
+    Requires:
+      - df_5m filtered to the current NY session (9AM–5PM NY) only,
+        with index reset to RangeIndex (caller handles this).
+      - crt_range_high / crt_range_low from the 4H CRT candle.
+      - htf_bias from the 4H data ("bullish" / "bearish" / "neutral"),
+        used to tag against-trend signals (they still fire, just flagged).
+
+    Returns a fully-populated MSSSignal if ALL confirmation requirements
+    are met, or None if any gate fails.
+    """
+    if df_5m is None or df_5m.empty or len(df_5m) < 8:
+        return None
+    if crt_range_high is None or crt_range_low is None:
+        return None
+    if crt_range_high != crt_range_high or crt_range_low != crt_range_low:  # NaN guard
+        return None
+
+    swings = find_swings(df_5m, lookback=3)
+    fvgs = find_fvgs(df_5m)
+    breakers = find_breaker_blocks(df_5m, swings)
+    order_blocks = find_order_blocks(df_5m)
+
+    # Gate 1 + 2 + 3: sweep of CRT range + MSS — reuse the same state
+    # machine used by Setup B, so the sweep/MSS definition is identical.
+    scan = detect_sweep_and_mss(df_5m, crt_range_high, crt_range_low, swings)
+
+    if not scan["sweep_detected"] or not scan["mss_confirmed"]:
+        return None
+
+    direction: Direction = scan["direction"]
+    sweep_side: str = scan["sweep_side"]
+    sweep_price: float = scan["sweep_price"]
+    mss_index: int = scan["mss_index"]
+
+    # Gate 4: at least one confluence factor
+    # Gate 5: entry must be inside the CRT range (re-entry rule)
+    reentry_idx, reentry_price = find_entry_after_range_reentry(
+        df_5m, mss_index, direction, crt_range_low, crt_range_high
+    )
+
+    if reentry_idx == "pending":
+        # MSS confirmed but price hasn't come back inside the range yet
+        return None
+    elif reentry_idx is not None:
+        entry_idx = reentry_idx
+        entry_price = float(reentry_price)
+    else:
+        entry_idx = mss_index
+        entry_price = float(df_5m["Close"].values[entry_idx])
+
+    confluence = check_fvg_breaker_confluence(
+        entry_idx, direction, fvgs, breakers, order_blocks=order_blocks
+    )
+
+    # Also check for precise breaker block (same improvement as Setup B)
+    precise_breaker = find_precise_breaker_block(
+        df_5m, scan["sweep_index"], mss_index, direction
+    )
+    if precise_breaker is not None:
+        confluence.append("Precise Breaker Block")
+
+    if not confluence:
+        # All structural requirements met but no confluence — not a signal yet
+        return None
+
+    # Trend tag
+    against_trend = not bias_allows_direction(htf_bias, direction)
+
+    # TP levels
+    liquidity = nearest_unswept_liquidity(
+        entry_price, direction, swings,
+        session_high=crt_range_high,
+        session_low=crt_range_low,
+        up_to_index=entry_idx,
+    )
+    tp1 = liquidity[0].price if len(liquidity) >= 1 else None
+    tp2 = liquidity[1].price if len(liquidity) >= 2 else None
+
+    trend_tag = " [AGAINST TREND]" if against_trend else ""
+    conf_str = ", ".join(confluence)
+    notes = (
+        f"5m fully confirmed {direction.upper()}{trend_tag} off NY CRT range "
+        f"({crt_range_low:.4f}–{crt_range_high:.4f}). "
+        f"Entry ~{entry_price:.4f}, SL {sweep_price:.4f}. "
+        f"Confluence: {conf_str}."
+    )
+
+    # signal_time: timestamp of the entry candle if available
+    times = df_5m.index if isinstance(df_5m.index, pd.DatetimeIndex) else None
+    signal_time = times[entry_idx] if times is not None and entry_idx < len(times) else None
+
+    return MSSSignal(
+        symbol=symbol,
+        direction=direction,
+        entry_price=entry_price,
+        stop_loss=sweep_price,
+        tp1=tp1,
+        tp2=tp2,
+        confluence=confluence,
+        sweep_price=sweep_price,
+        sweep_side=sweep_side,
+        crt_range_high=crt_range_high,
+        crt_range_low=crt_range_low,
+        signal_time=signal_time,
+        against_trend=against_trend,
+        notes=notes,
+    )
 
 
 def detect_5m_mss_bos(
@@ -1397,103 +1540,52 @@ def detect_5m_mss_bos(
     symbol: str,
     crt_range_high: Optional[float] = None,
     crt_range_low: Optional[float] = None,
+    htf_bias: str = "neutral",
 ) -> Optional[MSSSignal]:
     """
-    Scans the 5-minute intraday data for the most recent MSS or BOS
-    during the current NY session (9AM–5PM NY).
+    Entry point called by daily_dashboard.py.
 
-    If `crt_range_high` and `crt_range_low` are provided (from the NY CRT
-    setup), only MSS/BOS breaks that occur AFTER a sweep of the CRT range
-    are returned — this filters to breaks that are contextually relevant to
-    the CRT trade setup. Without them, any MSS/BOS during the session is
-    returned.
-
-    Returns the MOST RECENT qualifying MSS (preferred) or BOS, or None.
+    Filters df_5m to the current NY session, then delegates to
+    analyze_ny_crt_5m for the full confirmation pipeline.
+    Returns a fully-confirmed MSSSignal or None — nothing is returned
+    for a partial setup (sweep only, MSS without confluence, etc.).
     """
     if df_5m is None or df_5m.empty or len(df_5m) < 10:
         return None
 
-    # Filter to NY session today only
+    # Must currently be inside the NY session
     now_ny = pd.Timestamp.now(tz=NY_TZ)
-    session_start_ny = now_ny.normalize().replace(hour=9)
-    session_end_ny = now_ny.normalize().replace(hour=17)
+    current_hour = now_ny.hour + now_ny.minute / 60
+    if not (9 <= current_hour < 17):
+        return None
 
+    # CRT range must be provided and valid — without it there is no
+    # defined range to sweep, so the confirmation chain cannot start
+    if crt_range_high is None or crt_range_low is None:
+        return None
+    if crt_range_high != crt_range_high or crt_range_low != crt_range_low:
+        return None
+
+    # Filter to today's NY session only
     idx = df_5m.index
     if idx.tz is None:
         idx_ny = idx.tz_localize("UTC").tz_convert(NY_TZ)
     else:
         idx_ny = idx.tz_convert(NY_TZ)
 
-    # Is it currently the NY session?
-    current_hour = now_ny.hour + now_ny.minute / 60
-    if not (9 <= current_hour < 17):
-        return None
-
+    session_start_ny = now_ny.normalize().replace(hour=9)
     session_mask = (idx_ny >= session_start_ny) & (idx_ny <= now_ny)
     df_session = df_5m[session_mask]
+
     if len(df_session) < 8:
         return None
 
     df_work = df_session.reset_index()
-    times = df_session.index
 
-    swings = find_swings(df_work, lookback=3)
-    breaks = classify_structure_breaks(df_work, swings, use_high_low=True)
-
-    if not breaks:
-        return None
-
-    # Optionally filter to breaks that follow a CRT range sweep
-    if crt_range_high is not None and crt_range_low is not None:
-        highs_arr = df_work["High"].values
-        lows_arr = df_work["Low"].values
-        closes_arr = df_work["Close"].values
-
-        # Find the last sweep of the CRT range (wick through, close inside)
-        last_sweep_idx = None
-        for i in range(len(df_work)):
-            if lows_arr[i] < crt_range_low and closes_arr[i] > crt_range_low:
-                last_sweep_idx = i
-            elif highs_arr[i] > crt_range_high and closes_arr[i] < crt_range_high:
-                last_sweep_idx = i
-
-        if last_sweep_idx is not None:
-            breaks = [b for b in breaks if b["index"] > last_sweep_idx]
-
-    if not breaks:
-        return None
-
-    # Prefer MSS over BOS; among same type, prefer most recent
-    mss_breaks = [b for b in breaks if b["type"] == "MSS"]
-    bos_breaks = [b for b in breaks if b["type"] == "BOS"]
-
-    chosen = None
-    if mss_breaks:
-        chosen = mss_breaks[-1]  # most recent MSS
-    elif bos_breaks:
-        chosen = bos_breaks[-1]  # fall back to most recent BOS
-
-    if chosen is None:
-        return None
-
-    idx_in_session = chosen["index"]
-    closes_arr = df_work["Close"].values
-    break_price = float(closes_arr[idx_in_session])
-    break_time = times[idx_in_session] if idx_in_session < len(times) else None
-
-    context = ""
-    if crt_range_high is not None and crt_range_low is not None:
-        context = f" (after CRT range sweep: {crt_range_low:.4f}–{crt_range_high:.4f})"
-
-    return MSSSignal(
+    return analyze_ny_crt_5m(
+        df_work,
+        crt_range_high=crt_range_high,
+        crt_range_low=crt_range_low,
         symbol=symbol,
-        break_type=chosen["type"],
-        direction=chosen["direction"],
-        break_index=idx_in_session,
-        break_price=break_price,
-        break_time=break_time,
-        notes=(
-            f"5m {chosen['type']} {chosen['direction'].upper()}{context}. "
-            f"Break close: {break_price:.4f}."
-        ),
+        htf_bias=htf_bias,
     )
