@@ -109,10 +109,11 @@ def signal_key(symbol, setup_name, state):
 
 
 def mss_signal_key(signal: MSSSignal) -> str:
-    """Fingerprint for a 5m MSS/BOS alert - includes break price so the
-    same break doesn't re-fire on subsequent workflow runs."""
-    price = f"{signal.break_price:.5f}"
-    return f"{signal.symbol}|5m_{signal.break_type}|{signal.direction}|{price}"
+    """Fingerprint for a fully-confirmed 5m NY CRT signal. Uses entry price
+    as the unique anchor — same logic as the Setup A/B signal_key — so
+    re-running the workflow on an unchanged signal won't re-notify."""
+    price = f"{signal.entry_price:.5f}"
+    return f"{signal.symbol}|5m_CRT_confirmed|{signal.direction}|{price}"
 
 
 def send_telegram_alert(message):
@@ -165,18 +166,31 @@ def build_alert_message(symbol, state: SetupState) -> str:
 
 
 def build_mss_alert_message(signal: MSSSignal) -> str:
-    """Telegram message for a 5-minute MSS or BOS alert during NY session."""
-    emoji = "🟡"
-    direction_word = "LONG" if signal.direction == "long" else "SHORT"
-    time_str = signal.break_time.strftime("%H:%M NY") if signal.break_time else "unknown time"
+    """
+    Telegram message for a fully-confirmed 5m NY CRT signal.
+    Only sent after sweep + MSS + confluence + in-range entry are all met —
+    so the format mirrors the Setup A/B alert exactly.
+    """
+    conf = ", ".join(signal.confluence) if signal.confluence else "none"
+    direction_word = "BUY" if signal.direction == "long" else "SELL"
+    emoji = "🟢" if signal.direction == "long" else "🔴"
+    trend_line = "\n⚠️ *AGAINST 4H TREND*\n" if signal.against_trend else ""
+    time_str = signal.signal_time.strftime("%H:%M NY") if signal.signal_time else ""
+    time_line = f"Time: {time_str}\n" if time_str else ""
+
+    tp1_line = f"TP1 (→ BE): `{signal.tp1:.5f}`\n" if signal.tp1 is not None else "TP1: no liquidity found yet\n"
+    tp2_line = f"TP2: `{signal.tp2:.5f}`\n" if signal.tp2 is not None else ""
+
     return (
-        f"{emoji} *5m {signal.break_type} — {signal.symbol}*\n"
-        f"_NY Session Structure Break_\n\n"
-        f"Direction: *{direction_word}*\n"
-        f"Break price: `{signal.break_price:.5f}`\n"
-        f"Time: {time_str}\n"
-        f"_{signal.notes}_\n\n"
-        f"⚡ Monitor for entry confirmation (FVG / Breaker Block)."
+        f"{emoji} *{direction_word} — {signal.symbol}*\n"
+        f"_NY 5AM CRT (5m confirmed)_\n"
+        f"{trend_line}\n"
+        f"Entry: `{signal.entry_price:.5f}`\n"
+        f"Stop Loss: `{signal.stop_loss:.5f}`\n"
+        f"{tp1_line}"
+        f"{tp2_line}"
+        f"{time_line}"
+        f"Confluence: {conf}"
     )
 
 
@@ -392,17 +406,32 @@ def analyze_symbol(name, ticker):
 
         results["setup_b"] = best_state
 
-        # 5m MSS/BOS during NY session (companion to NY CRT)
-        # Only run if we're in the NY session and have 5m data
+        # 5m fully-confirmed NY CRT signal — only fires when ALL gates pass:
+        # CRT range sweep → MSS → confluence → entry inside the range.
+        # Only attempted during the live NY session with valid 5m data.
         ny_now = pd.Timestamp.now(tz=NY_TZ)
         current_hour_ny = ny_now.hour + ny_now.minute / 60
         if 9 <= current_hour_ny < 17 and not df_5m.empty:
             crt_high = best_state.range_high if best_state and best_state.range_high == best_state.range_high else None
-            crt_low = best_state.range_low if best_state and best_state.range_low == best_state.range_low else None
+            crt_low  = best_state.range_low  if best_state and best_state.range_low  == best_state.range_low  else None
+            # Pass the same 4H bias used by Setup B so the trend tag is consistent
             try:
-                results["mss_5m"] = detect_5m_mss_bos(df_5m, name, crt_high, crt_low)
+                htf_bias_5m = best_state.notes  # not the bias itself — compute it properly below
+            except Exception:
+                htf_bias_5m = "neutral"
+            # Recompute bias from 4H data (same method as Setup B)
+            try:
+                from strategy_v2 import compute_htf_bias
+                df_4h_for_bias = build_4h_anchored_to_hour(df_1h, candidate_hours[0])
+                htf_bias_5m = compute_htf_bias(df_4h_for_bias) if not df_4h_for_bias.empty else "neutral"
+            except Exception:
+                htf_bias_5m = "neutral"
+            try:
+                results["mss_5m"] = detect_5m_mss_bos(
+                    df_5m, name, crt_high, crt_low, htf_bias=htf_bias_5m
+                )
             except Exception as e:
-                print(f"5m MSS detection error for {name}: {e}")
+                print(f"5m confirmed signal detection error for {name}: {e}")
                 results["mss_5m"] = None
         else:
             results["mss_5m"] = None
@@ -502,25 +531,40 @@ def render_setup_card(state: SetupState) -> str:
 
 
 def render_mss_5m_card(signal: MSSSignal) -> str:
-    """Renders a compact alert card for a 5m MSS/BOS during the NY session."""
+    """
+    Renders a full signal card for a confirmed 5m NY CRT setup.
+    Only shown when ALL gates passed (sweep + MSS + confluence + in-range
+    entry), so the card always carries a complete entry/SL/TP layout —
+    identical in structure to the Setup A and Setup B signal cards.
+    """
     if signal is None:
         return ""
 
     dir_color = "#1e9e5a" if signal.direction == "long" else "#c0392b"
-    direction_label = "LONG" if signal.direction == "long" else "SHORT"
-    time_str = signal.break_time.strftime("%H:%M NY") if signal.break_time else ""
-    type_color = "#1e9e5a" if signal.break_type == "MSS" else "#c9a227"
+    direction_label = "BUY" if signal.direction == "long" else "SELL"
+    conf = ", ".join(signal.confluence) if signal.confluence else "—"
+    time_str = signal.signal_time.strftime("%H:%M NY") if signal.signal_time else ""
+    trend_warning = (
+        '<div class="row" style="color:#c9a227"><span>⚠ Against 4H trend</span><b></b></div>'
+        if signal.against_trend else ""
+    )
 
     return f"""
     <div class="setup-card mss-card">
       <div class="setup-header">
-        <span class="setup-name">5m {signal.break_type} (NY Session)</span>
-        <span class="status-pill" style="background:{type_color}">{signal.break_type} DETECTED</span>
+        <span class="setup-name">NY 5AM CRT (5m confirmed)</span>
+        <span class="status-pill" style="background:#1e9e5a">SIGNAL LIVE</span>
       </div>
+      <div class="range">CRT Range: {fmt(signal.crt_range_low)} — {fmt(signal.crt_range_high)}</div>
       <div class="levels">
         <div class="dir" style="color:{dir_color}">{direction_label}</div>
-        <div class="row"><span>Break price</span><b>{fmt(signal.break_price)}</b></div>
-        <div class="row"><span>Time</span><b>{time_str}</b></div>
+        {trend_warning}
+        <div class="row"><span>Entry</span><b>{fmt(signal.entry_price)}</b></div>
+        <div class="row"><span>Stop Loss</span><b>{fmt(signal.stop_loss)}</b></div>
+        <div class="row"><span>TP1 (→ move SL to BE)</span><b>{fmt(signal.tp1)}</b></div>
+        <div class="row"><span>TP2</span><b>{fmt(signal.tp2)}</b></div>
+        <div class="row"><span>Confluence</span><b>{conf}</b></div>
+        {"<div class='row'><span>Time</span><b>" + time_str + "</b></div>" if time_str else ""}
       </div>
       <div class="notes">{signal.notes}</div>
     </div>
