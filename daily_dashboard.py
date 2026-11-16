@@ -2,8 +2,8 @@
 daily_dashboard.py
 
 Run this every morning (or on a schedule). It pulls fresh data for all
-configured instruments, runs both strategy setups (Daily PDH/PDL and
-NY 5AM CRT), and renders a single mobile-friendly HTML page showing
+configured instruments, runs all strategy setups (Daily PDH/PDL, NY 5AM CRT,
+and Major Liquidity), and renders a single mobile-friendly HTML page showing
 exactly where each instrument stands: waiting / swept / MSS confirmed /
 entry+SL+TP1+TP2 levels + confluence tags.
 
@@ -22,7 +22,15 @@ import pandas as pd
 import yfinance as yf
 import requests
 
-from strategy_v2 import analyze_daily_setup, analyze_ny_crt_setup, SetupState, NY_TZ
+from strategy_v2 import (
+    analyze_daily_setup,
+    analyze_ny_crt_setup,
+    run_major_liquidity_across_timeframes,
+    detect_5m_mss_bos,
+    SetupState,
+    MSSSignal,
+    NY_TZ,
+)
 
 SYMBOLS = {
     "GOLD":   "GC=F",
@@ -100,6 +108,13 @@ def signal_key(symbol, setup_name, state):
     return f"{symbol}|{setup_name}|{state.direction}|{entry}"
 
 
+def mss_signal_key(signal: MSSSignal) -> str:
+    """Fingerprint for a 5m MSS/BOS alert - includes break price so the
+    same break doesn't re-fire on subsequent workflow runs."""
+    price = f"{signal.break_price:.5f}"
+    return f"{signal.symbol}|5m_{signal.break_type}|{signal.direction}|{price}"
+
+
 def send_telegram_alert(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram not configured (missing TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID secrets) - skipping alert.")
@@ -149,6 +164,22 @@ def build_alert_message(symbol, state: SetupState) -> str:
     )
 
 
+def build_mss_alert_message(signal: MSSSignal) -> str:
+    """Telegram message for a 5-minute MSS or BOS alert during NY session."""
+    emoji = "🟡"
+    direction_word = "LONG" if signal.direction == "long" else "SHORT"
+    time_str = signal.break_time.strftime("%H:%M NY") if signal.break_time else "unknown time"
+    return (
+        f"{emoji} *5m {signal.break_type} — {signal.symbol}*\n"
+        f"_NY Session Structure Break_\n\n"
+        f"Direction: *{direction_word}*\n"
+        f"Break price: `{signal.break_price:.5f}`\n"
+        f"Time: {time_str}\n"
+        f"_{signal.notes}_\n\n"
+        f"⚡ Monitor for entry confirmation (FVG / Breaker Block)."
+    )
+
+
 # OANDA is the PRIMARY data source for all instruments - real spot/CFD
 # pricing that tracks brokers far more closely than Yahoo's mix of futures
 # (GC=F) and cash index (^NDX, ^DJI) tickers. Yahoo Finance is kept only as
@@ -173,7 +204,8 @@ OANDA_INSTRUMENTS = {
 
 def fetch_oanda(name, granularity, count):
     """Pulls OHLC candles from OANDA's v20 API.
-    granularity: OANDA codes - "D" (daily), "H1" (1 hour), "M15" (15 min)"""
+    granularity: OANDA codes - "D" (daily), "H1" (1 hour), "M15" (15 min),
+                               "M30" (30 min), "M5" (5 min)"""
     instrument = OANDA_INSTRUMENTS.get(name)
     if not instrument or not OANDA_API_TOKEN:
         return pd.DataFrame()
@@ -233,21 +265,39 @@ def fetch(name, interval, period):
     empty DataFrame (not an exception) if both sources fail, so callers
     can check .empty rather than needing a try/except at every call site.
 
-    interval: "1d", "1h", or "15m" (mapped internally to each source's codes)
+    interval: "1d", "1h", "30m", "15m", "5m" (mapped internally to each source's codes)
     """
-    oanda_granularity = {"1d": "D", "1h": "H1", "15m": "M15"}.get(interval)
-    oanda_count = {"1d": 30, "1h": 500, "15m": 2000}.get(interval, 500)
+    oanda_map = {
+        "1d":  ("D",   30),
+        "1h":  ("H1",  500),
+        "30m": ("M30", 2000),
+        "15m": ("M15", 2000),
+        "5m":  ("M5",  500),
+    }
+    oanda_granularity, oanda_count = oanda_map.get(interval, ("M15", 2000))
 
-    if oanda_granularity:
-        df = fetch_oanda(name, oanda_granularity, oanda_count)
-        if not df.empty:
-            return df
+    df = fetch_oanda(name, oanda_granularity, oanda_count)
+    if not df.empty:
+        return df
 
-    # OANDA unavailable/empty - fall back to Yahoo
+    # OANDA unavailable/empty - fall back to Yahoo (Yahoo doesn't have 30m,
+    # so we resample from 15m in that case)
     ticker = SYMBOLS.get(name)
     if ticker:
         print(f"OANDA returned nothing for {name} ({interval}) - trying Yahoo Finance backup.")
-        return fetch_yahoo(ticker, interval, period)
+        if interval == "30m":
+            df_15 = fetch_yahoo(ticker, "15m", "60d")
+            if not df_15.empty:
+                try:
+                    return df_15.resample("30min").agg(
+                        {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
+                    ).dropna()
+                except Exception:
+                    pass
+            return pd.DataFrame()
+        yahoo_interval = {"1d": "1d", "1h": "1h", "15m": "15m", "5m": "5m"}.get(interval, "15m")
+        yahoo_period = {"1d": "30d", "1h": "60d", "15m": "60d", "5m": "5d"}.get(interval, "60d")
+        return fetch_yahoo(ticker, yahoo_interval, yahoo_period)
 
     return pd.DataFrame()
 
@@ -297,7 +347,9 @@ def analyze_symbol(name, ticker):
     try:
         df_daily = fetch(name, "1d", "30d")
         df_15m = fetch(name, "15m", "60d")
-        df_1h = fetch(name, "1h", "60d")  # resampled to 4H below, anchored per-instrument
+        df_30m = fetch(name, "30m", "60d")
+        df_1h = fetch(name, "1h", "60d")   # resampled to 4H below, anchored per-instrument
+        df_5m = fetch(name, "5m", "5d")    # for 5m MSS/BOS during NY session
 
         # Setup A - Daily PDH/PDL
         if not df_daily.empty and not df_15m.empty:
@@ -340,10 +392,38 @@ def analyze_symbol(name, ticker):
 
         results["setup_b"] = best_state
 
+        # 5m MSS/BOS during NY session (companion to NY CRT)
+        # Only run if we're in the NY session and have 5m data
+        ny_now = pd.Timestamp.now(tz=NY_TZ)
+        current_hour_ny = ny_now.hour + ny_now.minute / 60
+        if 9 <= current_hour_ny < 17 and not df_5m.empty:
+            crt_high = best_state.range_high if best_state and best_state.range_high == best_state.range_high else None
+            crt_low = best_state.range_low if best_state and best_state.range_low == best_state.range_low else None
+            try:
+                results["mss_5m"] = detect_5m_mss_bos(df_5m, name, crt_high, crt_low)
+            except Exception as e:
+                print(f"5m MSS detection error for {name}: {e}")
+                results["mss_5m"] = None
+        else:
+            results["mss_5m"] = None
+
+        # Setup C - Major Liquidity (15m / 30m / 1h)
+        try:
+            results["setup_c"] = run_major_liquidity_across_timeframes(
+                df_15m=df_15m if not df_15m.empty else None,
+                df_30m=df_30m if not df_30m.empty else None,
+                df_1h=df_1h if not df_1h.empty else None,
+                symbol=name,
+            )
+        except Exception as e:
+            results["setup_c"] = safe_setup_state("Major Liquidity", name, f"Analysis error: {e}")
+
     except Exception as e:
         err_state = safe_setup_state("Error", name, f"Unexpected error: {e}")
         results["setup_a"] = err_state
         results["setup_b"] = err_state
+        results["setup_c"] = err_state
+        results["mss_5m"] = None
 
     return results
 
@@ -421,12 +501,41 @@ def render_setup_card(state: SetupState) -> str:
     """
 
 
+def render_mss_5m_card(signal: MSSSignal) -> str:
+    """Renders a compact alert card for a 5m MSS/BOS during the NY session."""
+    if signal is None:
+        return ""
+
+    dir_color = "#1e9e5a" if signal.direction == "long" else "#c0392b"
+    direction_label = "LONG" if signal.direction == "long" else "SHORT"
+    time_str = signal.break_time.strftime("%H:%M NY") if signal.break_time else ""
+    type_color = "#1e9e5a" if signal.break_type == "MSS" else "#c9a227"
+
+    return f"""
+    <div class="setup-card mss-card">
+      <div class="setup-header">
+        <span class="setup-name">5m {signal.break_type} (NY Session)</span>
+        <span class="status-pill" style="background:{type_color}">{signal.break_type} DETECTED</span>
+      </div>
+      <div class="levels">
+        <div class="dir" style="color:{dir_color}">{direction_label}</div>
+        <div class="row"><span>Break price</span><b>{fmt(signal.break_price)}</b></div>
+        <div class="row"><span>Time</span><b>{time_str}</b></div>
+      </div>
+      <div class="notes">{signal.notes}</div>
+    </div>
+    """
+
+
 def render_instrument_section(name, results) -> str:
+    mss_card = render_mss_5m_card(results.get("mss_5m"))
     return f"""
     <div class="instrument">
       <h2>{name}</h2>
       {render_setup_card(results['setup_a'])}
       {render_setup_card(results['setup_b'])}
+      {mss_card}
+      {render_setup_card(results['setup_c'])}
     </div>
     """
 
@@ -442,11 +551,16 @@ def build_dashboard():
             results = analyze_symbol(name, ticker)
         except Exception as e:
             err_state = safe_setup_state("Error", name, f"Fatal error analyzing {name}: {e}")
-            results = {"setup_a": err_state, "setup_b": err_state}
+            results = {
+                "setup_a": err_state,
+                "setup_b": err_state,
+                "setup_c": err_state,
+                "mss_5m": None,
+            }
         sections.append(render_instrument_section(name, results))
 
-        # check both setups for newly-confirmed signals worth notifying about
-        for setup_key in ("setup_a", "setup_b"):
+        # check setup_a, setup_b, setup_c for newly-confirmed signals
+        for setup_key in ("setup_a", "setup_b", "setup_c"):
             state = results.get(setup_key)
             if state and state.status == "mss_confirmed" and state.entry_price is not None:
                 key = signal_key(name, state.setup_name, state)
@@ -454,6 +568,15 @@ def build_dashboard():
                 if key not in previous_signals:
                     print(f"New signal detected: {key} - sending Telegram alert")
                     send_telegram_alert(build_alert_message(name, state))
+
+        # check 5m MSS/BOS alert
+        mss_sig = results.get("mss_5m")
+        if mss_sig is not None:
+            key = mss_signal_key(mss_sig)
+            current_signals[key] = True
+            if key not in previous_signals:
+                print(f"New 5m {mss_sig.break_type} detected for {name} - sending Telegram alert")
+                send_telegram_alert(build_mss_alert_message(mss_sig))
 
     save_signals(current_signals)
 
@@ -481,6 +604,10 @@ def build_dashboard():
   .setup-card {{
     background: #16161a; border-radius: 10px; padding: 12px 14px;
     margin-bottom: 10px; border: 1px solid #232327;
+  }}
+  .setup-card.mss-card {{
+    border-color: #2a2a1a;
+    background: #18180e;
   }}
   .setup-header {{
     display: flex; justify-content: space-between; align-items: center;
@@ -522,7 +649,8 @@ def build_dashboard():
 </header>
 {''.join(sections)}
 <footer>
-  Setup A = Daily PDH/PDL sweep · Setup B = NY 5AM candle range (CRT)<br>
+  Setup A = Daily PDH/PDL sweep · Setup B = NY 5AM candle range (CRT) · Setup C = Major Liquidity (15m/30m/1h)<br>
+  5m MSS/BOS shown during NY session (9AM–5PM NY) as early structure alert<br>
   TP1 = nearest unswept liquidity → move SL to breakeven · TP2 = next liquidity beyond<br>
   Not financial advice. Demo-test before live.
 </footer>
