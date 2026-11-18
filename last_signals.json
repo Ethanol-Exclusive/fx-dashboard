@@ -1,11 +1,1 @@
-{
-  "NAS100|NY 5AM CRT|long|27044.40000": true,
-  "NAS100|5m_CRT_confirmed|long|27103.40000": true,
-  "USDJPY|Daily PDH/PDL|long|159.56400": true,
-  "USDJPY|5m_CRT_confirmed|short|159.30400": true,
-  "BTCUSD|5m_CRT_confirmed|long|63896.50000": true,
-  "AUDUSD|Daily PDH/PDL|long|0.67376": true,
-  "AUDUSD|5m_CRT_confirmed|short|0.67375": true,
-  "NZDUSD|Daily PDH/PDL|long|0.55026": true,
-  "NZDUSD|5m_CRT_confirmed|short|0.55034": true
-}
+{}
