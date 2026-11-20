@@ -59,7 +59,7 @@
 <body>
 <header>
   <h1>Exclusive FX — Daily Setup Dashboard</h1>
-  <div class="ts">Updated 2026-11-20 13:09</div>
+  <div class="ts">Updated 2026-11-20 21:01</div>
   <a class="refresh-btn" href="https://github.com/Ethanol-Exclusive/fx-dashboard/actions/workflows/update-dashboard.yml" target="_blank" rel="noopener">
     ⟳ Refresh Analysis
   </a>
@@ -83,11 +83,16 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
+      <div class="range">5AM NY Candle: 3565.7000 — 3595.2900</div>
       
-      
-      <div class="notes">Outside NY session right now (08:09 NY) - this setup only looks for entries between 9:00 and 17:00 NY.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>5AM NY Candle LOW</b></div>
+          <div class="row"><span>Sweep price</span><b>3564.0550</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
       
@@ -97,9 +102,9 @@
         <span class="setup-name">Major Liquidity (15m)</span>
         <span class="status-pill" style="background:#555">WAITING</span>
       </div>
-      <div class="range">Consolidation Range (3H/3L touches): 3672.3950 — 3687.3350</div>
       
-      <div class="notes">Consolidation zone identified: 3672.3950 — 3687.3350 (3 high touches, 3 low touches). Watching for a liquidity grab (wick sweep of either side).</div>
+      
+      <div class="notes">No major consolidation zone identified on this timeframe yet.</div>
     </div>
     
     </div>
@@ -110,44 +115,78 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">Daily PDH/PDL</span>
-        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
+        <span class="status-pill" style="background:#1e9e5a">SIGNAL LIVE ⚠</span>
       </div>
       <div class="range">Previous Day: 26385.8000 — 27786.8000</div>
       
         <div class="levels">
-          <div class="row"><span>Swept</span><b>Previous Day LOW</b></div>
-          <div class="row"><span>Sweep price</span><b>26376.3000</b></div>
+          <div class="dir" style="color:#1e9e5a">BUY</div>
+          <div class="row" style="color:#c9a227"><span>⚠ Against 4H trend</span><b></b></div>
+          <div class="row"><span>Entry</span><b>26173.7000</b></div>
+          <div class="row"><span>Stop Loss</span><b>26376.3000</b></div>
+          <div class="row"><span>TP1 (→ move SL to BE)</span><b>26317.1000</b></div>
+          <div class="row"><span>TP2</span><b>26394.4000</b></div>
+          <div class="row"><span>Confluence</span><b>FVG, Breaker Block, Order Block</b></div>
         </div>
         
-      <div class="notes">Sweep of PDL detected - waiting for MSS confirmation.</div>
+      <div class="notes">MSS confirmed LONG [AGAINST TREND]. Entry ~26173.7000, SL 26376.3000, TP1 26317.1, TP2 26394.4. Confluence: FVG, Breaker Block, Order Block.</div>
     </div>
     
       
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
+      <div class="range">5AM NY Candle: 26031.8000 — 26317.1000</div>
       
-      
-      <div class="notes">Outside NY session right now (08:09 NY) - this setup only looks for entries between 9:00 and 17:00 NY.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>5AM NY Candle LOW</b></div>
+          <div class="row"><span>Sweep price</span><b>26014.4000</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
       
+    <div class="setup-card mss-card">
+      <div class="setup-header">
+        <span class="setup-name">NY 5AM CRT (5m confirmed)</span>
+        <span class="status-pill" style="background:#1e9e5a">SIGNAL LIVE</span>
+      </div>
+      <div class="range">CRT Range: 26031.8000 — 26317.1000</div>
+      <div class="levels">
+        <div class="dir" style="color:#c0392b">SELL</div>
+        
+        <div class="row"><span>Entry</span><b>25943.4000</b></div>
+        <div class="row"><span>Stop Loss</span><b>26326.2000</b></div>
+        <div class="row"><span>TP1 (→ move SL to BE)</span><b>—</b></div>
+        <div class="row"><span>TP2</span><b>—</b></div>
+        <div class="row"><span>Confluence</span><b>FVG, Breaker Block, Order Block, Precise Breaker Block</b></div>
+        
+      </div>
+      <div class="notes">5m fully confirmed SHORT off NY CRT range (26031.8000–26317.1000). Entry ~25943.4000, SL 26326.2000. Confluence: FVG, Breaker Block, Order Block, Precise Breaker Block.</div>
+    </div>
+    
       
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">Major Liquidity (15m)</span>
-        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
+        <span class="status-pill" style="background:#1e9e5a">SIGNAL LIVE ⚠</span>
       </div>
       <div class="range">Consolidation Range (2H/7L touches): 26219.0000 — 26323.3000</div>
       
         <div class="levels">
-          <div class="row"><span>Swept</span><b>Consolidation Range (2H/7L touches) LOW</b></div>
-          <div class="row"><span>Sweep price</span><b>26179.8000</b></div>
+          <div class="dir" style="color:#1e9e5a">BUY</div>
+          <div class="row" style="color:#c9a227"><span>⚠ Against 4H trend</span><b></b></div>
+          <div class="row"><span>Entry</span><b>26173.7000</b></div>
+          <div class="row"><span>Stop Loss</span><b>26217.2000</b></div>
+          <div class="row"><span>TP1 (→ move SL to BE)</span><b>26317.1000</b></div>
+          <div class="row"><span>TP2</span><b>26323.3000</b></div>
+          <div class="row"><span>Confluence</span><b>FVG, Breaker Block, Order Block, Precise Breaker Block</b></div>
         </div>
         
-      <div class="notes">Liquidity grab of range LOW detected at 26179.8000 (range: 26219.0000 — 26323.3000). Waiting for MSS confirmation of reversal.</div>
+      <div class="notes">MSS confirmed LONG [AGAINST TREND] after major liquidity grab at 26217.2000 (range: 26219.0000 — 26323.3000). Entry ~26173.7000, SL 26217.2000, TP1 26317.1, TP2 26323.3. Confluence: FVG, Breaker Block, Order Block, Precise Breaker Block.</div>
     </div>
     
     </div>
@@ -171,9 +210,9 @@
         <span class="setup-name">NY 5AM CRT</span>
         <span class="status-pill" style="background:#555">WAITING</span>
       </div>
+      <div class="range">5AM NY Candle: 1.0957 — 1.0984</div>
       
-      
-      <div class="notes">Outside NY session right now (08:09 NY) - this setup only looks for entries between 9:00 and 17:00 NY.</div>
+      <div class="notes">No sweep of the 5AM NY candle range yet.</div>
     </div>
     
       
@@ -183,9 +222,9 @@
         <span class="setup-name">Major Liquidity (15m)</span>
         <span class="status-pill" style="background:#555">WAITING</span>
       </div>
-      <div class="range">Consolidation Range (8H/9L touches): 1.0957 — 1.0990</div>
+      <div class="range">Consolidation Range (7H/12L touches): 1.0957 — 1.1000</div>
       
-      <div class="notes">Consolidation zone identified: 1.0957 — 1.0990 (8 high touches, 9 low touches). Watching for a liquidity grab (wick sweep of either side).</div>
+      <div class="notes">Consolidation zone identified: 1.0957 — 1.1000 (7 high touches, 12 low touches). Watching for a liquidity grab (wick sweep of either side).</div>
     </div>
     
     </div>
@@ -212,11 +251,16 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
+      <div class="range">5AM NY Candle: 158.7040 — 159.1160</div>
       
-      
-      <div class="notes">Outside NY session right now (08:09 NY) - this setup only looks for entries between 9:00 and 17:00 NY.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>5AM NY Candle LOW</b></div>
+          <div class="row"><span>Sweep price</span><b>158.6810</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
       
@@ -226,9 +270,9 @@
         <span class="setup-name">Major Liquidity (15m)</span>
         <span class="status-pill" style="background:#555">WAITING</span>
       </div>
-      <div class="range">Consolidation Range (5H/10L touches): 158.7110 — 159.4410</div>
+      <div class="range">Consolidation Range (6H/5L touches): 158.4160 — 159.1750</div>
       
-      <div class="notes">Consolidation zone identified: 158.7110 — 159.4410 (5 high touches, 10 low touches). Watching for a liquidity grab (wick sweep of either side).</div>
+      <div class="notes">Consolidation zone identified: 158.4160 — 159.1750 (6 high touches, 5 low touches). Watching for a liquidity grab (wick sweep of either side).</div>
     </div>
     
     </div>
@@ -255,11 +299,16 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
+      <div class="range">5AM NY Candle: 1.3094 — 1.3116</div>
       
-      
-      <div class="notes">Outside NY session right now (08:09 NY) - this setup only looks for entries between 9:00 and 17:00 NY.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>5AM NY Candle HIGH</b></div>
+          <div class="row"><span>Sweep price</span><b>1.3117</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
       
@@ -269,9 +318,9 @@
         <span class="setup-name">Major Liquidity (15m)</span>
         <span class="status-pill" style="background:#555">WAITING</span>
       </div>
-      <div class="range">Consolidation Range (7H/7L touches): 1.3078 — 1.3122</div>
+      <div class="range">Consolidation Range (4H/7L touches): 1.3078 — 1.3129</div>
       
-      <div class="notes">Consolidation zone identified: 1.3078 — 1.3122 (7 high touches, 7 low touches). Watching for a liquidity grab (wick sweep of either side).</div>
+      <div class="notes">Consolidation zone identified: 1.3078 — 1.3129 (4 high touches, 7 low touches). Watching for a liquidity grab (wick sweep of either side).</div>
     </div>
     
     </div>
@@ -288,7 +337,7 @@
       
         <div class="levels">
           <div class="row"><span>Swept</span><b>Previous Day LOW</b></div>
-          <div class="row"><span>Sweep price</span><b>61317.5000</b></div>
+          <div class="row"><span>Sweep price</span><b>61347.5000</b></div>
         </div>
         
       <div class="notes">Sweep of PDL detected - waiting for MSS confirmation.</div>
@@ -302,7 +351,7 @@
       </div>
       <div class="range">4AM NY Candle: 61490.5000 — 62278.5000</div>
       
-      <div class="notes">4AM NY candle range marked (4AM-8AM NY) - waiting for the candle to finish printing / for NY session entries.</div>
+      <div class="notes">No sweep of the 5AM NY candle range yet.</div>
     </div>
     
       
@@ -336,11 +385,16 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
+      <div class="range">5AM NY Candle: 0.6655 — 0.6668</div>
       
-      
-      <div class="notes">Outside NY session right now (08:09 NY) - this setup only looks for entries between 9:00 and 17:00 NY.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>5AM NY Candle HIGH</b></div>
+          <div class="row"><span>Sweep price</span><b>0.6669</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
       
@@ -350,9 +404,9 @@
         <span class="setup-name">Major Liquidity (15m)</span>
         <span class="status-pill" style="background:#555">WAITING</span>
       </div>
-      <div class="range">Consolidation Range (5H/6L touches): 0.6652 — 0.6682</div>
+      <div class="range">Consolidation Range (2H/3L touches): 0.6610 — 0.6642</div>
       
-      <div class="notes">Consolidation zone identified: 0.6652 — 0.6682 (5 high touches, 6 low touches). Watching for a liquidity grab (wick sweep of either side).</div>
+      <div class="notes">Consolidation zone identified: 0.6610 — 0.6642 (2 high touches, 3 low touches). Watching for a liquidity grab (wick sweep of either side).</div>
     </div>
     
     </div>
@@ -384,28 +438,57 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
+      <div class="range">6AM NY Candle: 48843.8000 — 49287.3000</div>
       
-      
-      <div class="notes">Outside NY session right now (08:09 NY) - this setup only looks for entries between 9:00 and 17:00 NY.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>6AM NY Candle LOW</b></div>
+          <div class="row"><span>Sweep price</span><b>48827.4000</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
       
+    <div class="setup-card mss-card">
+      <div class="setup-header">
+        <span class="setup-name">NY 5AM CRT (5m confirmed)</span>
+        <span class="status-pill" style="background:#1e9e5a">SIGNAL LIVE</span>
+      </div>
+      <div class="range">CRT Range: 48843.8000 — 49287.3000</div>
+      <div class="levels">
+        <div class="dir" style="color:#1e9e5a">BUY</div>
+        <div class="row" style="color:#c9a227"><span>⚠ Against 4H trend</span><b></b></div>
+        <div class="row"><span>Entry</span><b>48834.8000</b></div>
+        <div class="row"><span>Stop Loss</span><b>48827.4000</b></div>
+        <div class="row"><span>TP1 (→ move SL to BE)</span><b>48987.8000</b></div>
+        <div class="row"><span>TP2</span><b>49209.4000</b></div>
+        <div class="row"><span>Confluence</span><b>FVG, Breaker Block, Order Block, Precise Breaker Block</b></div>
+        
+      </div>
+      <div class="notes">5m fully confirmed LONG [AGAINST TREND] off NY CRT range (48843.8000–49287.3000). Entry ~48834.8000, SL 48827.4000. Confluence: FVG, Breaker Block, Order Block, Precise Breaker Block.</div>
+    </div>
+    
       
     <div class="setup-card">
       <div class="setup-header">
-        <span class="setup-name">Major Liquidity (15m)</span>
-        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
+        <span class="setup-name">Major Liquidity (30m)</span>
+        <span class="status-pill" style="background:#1e9e5a">SIGNAL LIVE ⚠</span>
       </div>
-      <div class="range">Consolidation Range (2H/2L touches): 48979.3000 — 49214.3000</div>
+      <div class="range">Consolidation Range (6H/5L touches): 48949.8000 — 49180.8000</div>
       
         <div class="levels">
-          <div class="row"><span>Swept</span><b>Consolidation Range (2H/2L touches) HIGH</b></div>
-          <div class="row"><span>Sweep price</span><b>49287.3000</b></div>
+          <div class="dir" style="color:#1e9e5a">BUY</div>
+          <div class="row" style="color:#c9a227"><span>⚠ Against 4H trend</span><b></b></div>
+          <div class="row"><span>Entry</span><b>49162.8000</b></div>
+          <div class="row"><span>Stop Loss</span><b>48926.3000</b></div>
+          <div class="row"><span>TP1 (→ move SL to BE)</span><b>49180.8000</b></div>
+          <div class="row"><span>TP2</span><b>49287.3000</b></div>
+          <div class="row"><span>Confluence</span><b>FVG, Breaker Block, Order Block, Precise Breaker Block</b></div>
         </div>
         
-      <div class="notes">Liquidity grab of range HIGH detected at 49287.3000 (range: 48979.3000 — 49214.3000). Waiting for MSS confirmation of reversal.</div>
+      <div class="notes">MSS confirmed LONG [AGAINST TREND] after major liquidity grab at 48926.3000 (range: 48949.8000 — 49180.8000). Entry ~49162.8000, SL 48926.3000, TP1 49180.8, TP2 49287.3. Confluence: FVG, Breaker Block, Order Block, Precise Breaker Block.</div>
     </div>
     
     </div>
@@ -427,11 +510,16 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
+      <div class="range">5AM NY Candle: 1.4306 — 1.4332</div>
       
-      
-      <div class="notes">Outside NY session right now (08:09 NY) - this setup only looks for entries between 9:00 and 17:00 NY.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>5AM NY Candle HIGH</b></div>
+          <div class="row"><span>Sweep price</span><b>1.4332</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
       
@@ -441,9 +529,9 @@
         <span class="setup-name">Major Liquidity (15m)</span>
         <span class="status-pill" style="background:#555">WAITING</span>
       </div>
-      <div class="range">Consolidation Range (7H/7L touches): 1.4307 — 1.4352</div>
+      <div class="range">Consolidation Range (10H/4L touches): 1.4299 — 1.4345</div>
       
-      <div class="notes">Consolidation zone identified: 1.4307 — 1.4352 (7 high touches, 7 low touches). Watching for a liquidity grab (wick sweep of either side).</div>
+      <div class="notes">Consolidation zone identified: 1.4299 — 1.4345 (10 high touches, 4 low touches). Watching for a liquidity grab (wick sweep of either side).</div>
     </div>
     
     </div>
@@ -470,11 +558,16 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
+      <div class="range">5AM NY Candle: 0.5488 — 0.5505</div>
       
-      
-      <div class="notes">Outside NY session right now (08:09 NY) - this setup only looks for entries between 9:00 and 17:00 NY.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>5AM NY Candle LOW</b></div>
+          <div class="row"><span>Sweep price</span><b>0.5486</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
       
@@ -484,9 +577,9 @@
         <span class="setup-name">Major Liquidity (15m)</span>
         <span class="status-pill" style="background:#555">WAITING</span>
       </div>
-      <div class="range">Consolidation Range (5H/5L touches): 0.5487 — 0.5512</div>
+      <div class="range">Consolidation Range (4H/5L touches): 0.5471 — 0.5490</div>
       
-      <div class="notes">Consolidation zone identified: 0.5487 — 0.5512 (5 high touches, 5 low touches). Watching for a liquidity grab (wick sweep of either side).</div>
+      <div class="notes">Consolidation zone identified: 0.5471 — 0.5490 (4 high touches, 5 low touches). Watching for a liquidity grab (wick sweep of either side).</div>
     </div>
     
     </div>
@@ -508,28 +601,33 @@
     <div class="setup-card">
       <div class="setup-header">
         <span class="setup-name">NY 5AM CRT</span>
-        <span class="status-pill" style="background:#555">WAITING</span>
+        <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
+      <div class="range">5AM NY Candle: 24881.4000 — 25143.4000</div>
       
-      
-      <div class="notes">Outside NY session right now (08:09 NY) - this setup only looks for entries between 9:00 and 17:00 NY.</div>
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>5AM NY Candle LOW</b></div>
+          <div class="row"><span>Sweep price</span><b>24836.4000</b></div>
+        </div>
+        
+      <div class="notes">Sweep of 5AM range detected - waiting for MSS confirmation (check 5m/15m for entry timing).</div>
     </div>
     
       
       
     <div class="setup-card">
       <div class="setup-header">
-        <span class="setup-name">Major Liquidity (15m)</span>
+        <span class="setup-name">Major Liquidity (30m)</span>
         <span class="status-pill" style="background:#c9a227">SWEPT — awaiting MSS</span>
       </div>
-      <div class="range">Consolidation Range (3H/7L touches): 25079.4000 — 25188.0000</div>
+      <div class="range">Consolidation Range (2H/2L touches): 25145.0000 — 25257.0000</div>
       
         <div class="levels">
-          <div class="row"><span>Swept</span><b>Consolidation Range (3H/7L touches) HIGH</b></div>
-          <div class="row"><span>Sweep price</span><b>25237.0000</b></div>
+          <div class="row"><span>Swept</span><b>Consolidation Range (2H/2L touches) LOW</b></div>
+          <div class="row"><span>Sweep price</span><b>25109.0000</b></div>
         </div>
         
-      <div class="notes">Liquidity grab of range HIGH detected at 25237.0000 (range: 25079.4000 — 25188.0000). Waiting for MSS confirmation of reversal.</div>
+      <div class="notes">Liquidity grab of range LOW detected at 25109.0000 (range: 25145.0000 — 25257.0000). Waiting for MSS confirmation of reversal.</div>
     </div>
     
     </div>

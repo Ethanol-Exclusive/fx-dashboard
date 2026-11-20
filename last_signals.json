@@ -1,3 +1,8 @@
 {
-  "US30|Daily PDH/PDL|long|49056.30000": true
+  "NAS100|Daily PDH/PDL|long|26173.70000": true,
+  "NAS100|Major Liquidity (15m)|long|26173.70000": true,
+  "NAS100|5m_CRT_confirmed|short|25943.40000": true,
+  "US30|Daily PDH/PDL|long|49056.30000": true,
+  "US30|Major Liquidity (30m)|long|49162.80000": true,
+  "US30|5m_CRT_confirmed|long|48834.80000": true
 }
