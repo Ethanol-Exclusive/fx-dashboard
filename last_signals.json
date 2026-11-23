@@ -1,3 +1,8 @@
 {
-  "US30|Major Liquidity (30m)|long|49162.80000": true
+  "GOLD|Daily PDH/PDL|short|3604.72500": true,
+  "EURUSD|Daily PDH/PDL|short|1.09734": true,
+  "GBPUSD|Daily PDH/PDL|short|1.31210": true,
+  "AUDUSD|Daily PDH/PDL|long|0.66555": true,
+  "AUDUSD|Major Liquidity (15m)|long|0.66408": true,
+  "US30|Major Liquidity (1h)|long|49162.80000": true
 }
