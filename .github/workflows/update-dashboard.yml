@@ -26,7 +26,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install yfinance pandas numpy pytz requests
+        run: pip install yfinance pandas numpy pytz requests feedparser
 
       - name: Generate dashboard
         env:
