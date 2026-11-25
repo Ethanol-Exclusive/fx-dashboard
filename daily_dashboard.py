@@ -22,7 +22,6 @@ import re
 import pandas as pd
 import yfinance as yf
 import requests
-import feedparser
 
 from strategy_v2 import (
     analyze_daily_setup,
@@ -75,45 +74,6 @@ STATUS_LABELS = {
     "mss_confirmed": "SIGNAL LIVE",
     "no_data": "NO DATA",
 }
-
-# Market News RSS Feeds - High-quality financial news sources
-NEWS_FEEDS = {
-    "Bloomberg Markets": "https://feeds.bloomberg.com/markets/news.rss",
-    "Reuters Business": "https://feeds.reuters.com/reuters/businessNews",
-    "Financial Times": "https://www.ft.com/rss/home/uk",
-    "MarketWatch Top Stories": "https://feeds.marketwatch.com/marketwatch/topstories/",
-    "WSJ Markets": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
-    "CNBC Markets": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
-}
-
-# Keywords for impact categorization
-HIGH_IMPACT_KEYWORDS = [
-    "fed", "federal reserve", "interest rate", "rate decision", "fomc", "powell",
-    "cpi", "inflation", "pce", "jobs report", "nonfarm", "unemployment",
-    "gdp", "recession", "bank crisis", "bank failure", "bailout",
-    "war", "invasion", "missile", "nuclear", "opec", "oil production",
-    "earnings", "guidance", "forecast", "bankruptcy", "default",
-    "tariff", "trade war", "sanctions", "stimulus", "quantitative easing",
-    "yield curve", "inversion", "treasury", "bond yield",
-]
-
-MEDIUM_IMPACT_KEYWORDS = [
-    "retail sales", "consumer confidence", "pmi", "ism", "manufacturing",
-    "housing starts", "building permits", "durable goods", "factory orders",
-    "initial claims", "continuing claims", "wages", "hourly earnings",
-    "productivity", "unit labor costs", "trade deficit", "current account",
-    "central bank", "ecb", "boe", "boj", "snf", "rbnz", "rba", "boc",
-    "merger", "acquisition", "buyback", "dividend", "split", "ipo",
-    "upgrade", "downgrade", "price target", "analyst",
-    "crypto", "bitcoin", "ethereum", "etf", "spot etf",
-    "commodity", "gold", "silver", "copper", "natural gas",
-]
-
-LOW_IMPACT_KEYWORDS = [
-    "speech", "remarks", "testimony", "interview", "commentary",
-    "preview", "preview:", "outlook", "calendar", "schedule",
-    "holiday", "market closed", "early close", "half day",
-]
 
 STATE_FILE = "last_signals.json"
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -188,7 +148,7 @@ def send_telegram_alert(message):
 def build_alert_message(symbol, state: SetupState) -> str:
     conf = ", ".join(state.confluence) if state.confluence else "none"
     direction_word = "BUY" if state.direction == "long" else "SELL"
-    emoji = "[GREEN]" if state.direction == "long" else "[RED]"
+    emoji = "🟢" if state.direction == "long" else "🔴"
     trend_line = "\n! *AGAINST 4-hour TREND*\n" if state.against_trend else ""
 
     tp1_line = f"TP1 (-> BE): `{state.tp1:.5f}`\n" if state.tp1 is not None else "TP1: no liquidity found yet\n"
@@ -214,7 +174,7 @@ def build_mss_alert_message(signal: MSSSignal) -> str:
     """
     conf = ", ".join(signal.confluence) if signal.confluence else "none"
     direction_word = "BUY" if signal.direction == "long" else "SELL"
-    emoji = "[GREEN]" if signal.direction == "long" else "[RED]"
+    emoji = "🟢" if signal.direction == "long" else "🔴"
     trend_line = "\n! *AGAINST 4-hour TREND*\n" if signal.against_trend else ""
     time_str = signal.signal_time.strftime("%H:%M NY") if signal.signal_time else ""
     time_line = f"Time: {time_str}\n" if time_str else ""
@@ -233,171 +193,6 @@ def build_mss_alert_message(signal: MSSSignal) -> str:
         f"{time_line}"
         f"Confluence: {conf}"
     )
-
-
-# =====================================================================
-# MARKET NEWS FUNCTIONS
-# =====================================================================
-
-def categorize_impact(title: str, summary: str) -> str:
-    """Categorize news by likely market impact: 'high', 'medium', or 'low'."""
-    text = (title + " " + summary).lower()
-
-    for keyword in HIGH_IMPACT_KEYWORDS:
-        if keyword in text:
-            return "high"
-
-    for keyword in MEDIUM_IMPACT_KEYWORDS:
-        if keyword in text:
-            return "medium"
-
-    for keyword in LOW_IMPACT_KEYWORDS:
-        if keyword in text:
-            return "low"
-
-    # Default to medium for uncategorized financial news
-    return "medium"
-
-
-def clean_html(text: str) -> str:
-    """Strip HTML tags and decode entities from feed content."""
-    if not text:
-        return ""
-    # Remove HTML tags
-    text = re.sub(r"<[^>]+>", "", text)
-    # Decode common HTML entities
-    text = text.replace("&", "&").replace("<", "<").replace(">", ">")
-    text = text.replace("&ldquo;", '"').replace("&rdquo;", '"').replace("&lsquo;", "'").replace("&rsquo;", "'").replace("&nbsp;", " ")
-    # Collapse whitespace
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def fetch_market_news(max_items_per_feed: int = 5, max_total_items: int = 30) -> list:
-    """
-    Fetch and categorize market news from RSS feeds.
-    Returns list of dicts with: title, summary, link, source, published, impact
-    """
-    all_items = []
-    now = datetime.datetime.now(datetime.timezone.utc)
-    cutoff = now - datetime.timedelta(hours=24)  # Only last 24 hours
-
-    for source_name, feed_url in NEWS_FEEDS.items():
-        try:
-            feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:max_items_per_feed]:
-                # Parse publication date
-                pub_date = None
-                if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                    pub_date = datetime.datetime(*entry.published_parsed[:6], tzinfo=datetime.timezone.utc)
-                elif hasattr(entry, 'updated_parsed') and entry.updated_parsed:
-                    pub_date = datetime.datetime(*entry.updated_parsed[:6], tzinfo=datetime.timezone.utc)
-
-                # Skip if older than 24 hours
-                if pub_date and pub_date < cutoff:
-                    continue
-
-                title = clean_html(entry.get("title", ""))
-                summary = clean_html(entry.get("summary", entry.get("description", "")))
-                link = entry.get("link", "")
-
-                if not title:
-                    continue
-
-                impact = categorize_impact(title, summary)
-
-                all_items.append({
-                    "title": title,
-                    "summary": summary[:300] + "..." if len(summary) > 300 else summary,
-                    "link": link,
-                    "source": source_name,
-                    "published": pub_date.strftime("%H:%M UTC") if pub_date else "Recent",
-                    "impact": impact,
-                })
-        except Exception as e:
-            print(f"Warning: Failed to fetch {source_name}: {e}")
-            continue
-
-    # Sort by impact (high first), then by recency
-    impact_order = {"high": 0, "medium": 1, "low": 2}
-    all_items.sort(key=lambda x: (impact_order.get(x["impact"], 2), x["published"]))
-
-    return all_items[:max_total_items]
-
-
-def render_market_news_section(news_items: list) -> str:
-    """Render the market news section HTML."""
-    if not news_items:
-        return (
-            "<div class=\"instrument\">"
-            "  <h2>Market News</h2>"
-            "  <div class=\"setup-card\">"
-            "    <div class=\"setup-header\">"
-            "      <span class=\"setup-name\">Market News</span>"
-            "      <span class=\"status-pill\" style=\"background:#555\">NO DATA</span>"
-            "    </div>"
-            "    <div class=\"notes\">Unable to fetch news feeds at this time.</div>"
-            "  </div>"
-            "</div>"
-        )
-
-    # Group by impact
-    high_items = [n for n in news_items if n["impact"] == "high"]
-    medium_items = [n for n in news_items if n["impact"] == "medium"]
-    low_items = [n for n in news_items if n["impact"] == "low"]
-
-    def render_impact_group(title, items, color, emoji):
-        if not items:
-            return ""
-        html = (
-            "<div style=\"margin-bottom: 16px;\">"
-            "  <div style=\"display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 4px 0; border-bottom: 1px solid #222;\">"
-            f"    <span style=\"color: {color}; font-weight: 700; font-size: 13px;\">{emoji} {title} ({len(items)})</span>"
-            "  </div>"
-        )
-        for item in items:
-            html += (
-                "<div class=\"setup-card\" style=\"margin-bottom: 8px;\">"
-                "  <div style=\"display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px;\">"
-                f"    <a href=\"{item['link']}\" target=\"_blank\" rel=\"noopener\" style=\"color: #fff; text-decoration: none; font-size: 13px; font-weight: 600; flex: 1; line-height: 1.4;\">{item['title']}</a>"
-                f"    <span style=\"color: {color}; font-size: 10px; font-weight: 700; margin-left: 8px; white-space: nowrap;\">{item['published']}</span>"
-                "  </div>"
-                f"  <div style=\"font-size: 11px; color: #888; margin-bottom: 4px;\">{item['source']}</div>"
-                f"  <div style=\"font-size: 11px; color: #aaa; line-height: 1.5;\">{item['summary']}</div>"
-                "</div>"
-            )
-        html += "</div>"
-        return html
-
-    html = (
-        "<div class=\"instrument\">"
-        "  <h2>Market News</h2>"
-    )
-
-    html += render_impact_group("High Impact", high_items, "#c0392b", "[HIGH]")
-    html += render_impact_group("Medium Impact", medium_items, "#c9a227", "[MED]")
-    html += render_impact_group("Low Impact", low_items, "#555", "[LOW]")
-
-    # Add intraday flag check
-    intraday_flags = [n for n in news_items if any(kw in (n["title"] + " " + n["summary"]).lower() for kw in [
-        "today", "this morning", "this afternoon", "just in", "breaking", "live", "now", "intraday"
-    ])]
-
-    if intraday_flags:
-        html += (
-            "<div style=\"margin-top: 12px; padding: 8px 10px; background: #2a1a1a; border-radius: 8px; border: 1px solid #c0392b;\">"
-            "  <div style=\"color: #c0392b; font-size: 11px; font-weight: 700; margin-bottom: 4px;\">! INTRADAY ALERTS</div>"
-        )
-        for item in intraday_flags[:3]:
-            html += (
-                "<div style=\"font-size: 11px; color: #ffaaaa; margin: 2px 0;\">"
-                f"  - {item['title'][:100]}{'...' if len(item['title']) > 100 else ''}"
-                "</div>"
-            )
-        html += "</div>"
-
-    html += "</div>"
-    return html
 
 
 # OANDA is the PRIMARY data source for all instruments - real spot/CFD
@@ -792,13 +587,6 @@ def build_dashboard():
     sections = []
     previous_signals = load_previous_signals()
     current_signals = {}
-
-    # Fetch market news
-    print("Fetching market news...")
-    market_news = fetch_market_news()
-
-    # Add market news section at the top
-    sections.append(render_market_news_section(market_news))
 
     for name, ticker in SYMBOLS.items():
         try:
