@@ -517,26 +517,6 @@ def bias_allows_direction(bias: str, direction: Direction) -> bool:
     return True
 
 
-def min_stop_distance_ok(entry_price: float, stop_loss: float, direction: Direction,
-                         min_pips: float = 1.5) -> bool:
-    """Reject signals whose stop is closer to the entry than `min_pips`.
-
-    A stop that sits inside the broker's bid/ask spread (a fraction of a
-    pip away, as happens when the re-entry candle's close lands almost
-    exactly on the swept level) can never be triggered by normal price
-    movement, so the trade is un-runnable. Enforcing a floor keeps every
-    emitted signal actually placeable.
-    """
-    if entry_price is None or stop_loss is None:
-        return False
-    distance = abs(stop_loss - entry_price)
-    # Price bands, not a single threshold: JPY/GOLD/BTC quote at 0.01-per-pip,
-    # most FX pairs at 0.0001. Anything below $1 (some crypto) also uses 0.0001.
-    price = abs(entry_price)
-    pip = 0.01 if price >= 30 else 0.0001
-    return distance >= min_pips * pip
-
-
 def find_entry_after_range_reentry(
     df: pd.DataFrame,
     mss_index: int,
@@ -734,17 +714,6 @@ def analyze_daily_setup(df_daily: pd.DataFrame, df_intraday: pd.DataFrame, symbo
     state.entry_price = entry_price
     state.stop_loss = state.sweep_price
     state.confluence = confluence
-
-    # Reject signals whose stop sits inside the broker spread - they can
-    # never be triggered, so there is no trade to take.
-    if not min_stop_distance_ok(entry_price, state.stop_loss, state.direction):
-        state.entry_price = None
-        state.status = "mss_confirmed"
-        state.notes = (
-            f"MSS confirmed {state.direction.upper()} but the stop is too close to the "
-            f"entry (inside the broker spread) - not a placeable trade."
-        )
-        return state
 
     liquidity = nearest_unswept_liquidity(
         entry_price, state.direction, swings, session_high=None, session_low=None, up_to_index=entry_idx
@@ -948,17 +917,6 @@ def analyze_ny_crt_setup(df_4h: pd.DataFrame, df_intraday: pd.DataFrame, symbol:
     state.entry_price = entry_price
     state.stop_loss = state.sweep_price
     state.confluence = confluence
-
-    # Reject signals whose stop sits inside the broker spread - they can
-    # never be triggered, so there is no trade to take.
-    if not min_stop_distance_ok(entry_price, state.stop_loss, state.direction):
-        state.entry_price = None
-        state.status = "mss_confirmed"
-        state.notes = (
-            f"MSS confirmed {state.direction.upper()} but the stop is too close to the "
-            f"entry (inside the broker spread) - not a placeable trade."
-        )
-        return state
 
     liquidity = nearest_unswept_liquidity(
         entry_price, state.direction, swings,
@@ -1345,18 +1303,6 @@ def analyze_major_liquidity_setup(
     state.stop_loss = state.sweep_price
     state.confluence = confluence
 
-    # Reject signals whose stop sits inside the broker spread - they can
-    # never be triggered, so there is no trade to take.
-    if not min_stop_distance_ok(entry_price, state.stop_loss, state.direction):
-        state.entry_price = None
-        state.status = "mss_confirmed"
-        state.notes = (
-            f"MSS confirmed {state.direction.upper()} after liquidity grab at "
-            f"{state.sweep_price:.4f} but the stop is too close to the entry "
-            f"(inside the broker spread) - not a placeable trade."
-        )
-        return state
-
     liquidity = nearest_unswept_liquidity(
         entry_price, state.direction, swings,
         session_high=range_high, session_low=range_low,
@@ -1543,11 +1489,6 @@ def analyze_ny_crt_5m(
 
     if not confluence:
         # All structural requirements met but no confluence — not a signal yet
-        return None
-
-    # Reject signals whose stop sits inside the broker spread - they can
-    # never be triggered, so there is no trade to take.
-    if not min_stop_distance_ok(entry_price, sweep_price, direction):
         return None
 
     # Trend tag
