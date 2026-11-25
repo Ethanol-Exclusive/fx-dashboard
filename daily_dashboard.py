@@ -2,7 +2,7 @@
 daily_dashboard.py
 
 Run this every morning (or on a schedule). It pulls fresh data for all
-configured instruments, runs all strategy setups (Daily PDH/PDL, NY 5 AM CRT,
+configured instruments, runs all strategy setups (Daily PDH/PDL, NY 5AM CRT,
 and Major Liquidity), and renders a single mobile-friendly HTML page showing
 exactly where each instrument stands: waiting / swept / MSS confirmed /
 entry+SL+TP1+TP2 levels + confluence tags.
@@ -18,7 +18,6 @@ import datetime
 import json
 import os
 import traceback
-import re
 import pandas as pd
 import yfinance as yf
 import requests
@@ -47,7 +46,7 @@ SYMBOLS = {
     "GER30":  "^GDAXI",
 }
 
-# Most instruments' CRT candle opens at 5 AM NY. Indices (and BTCUSD) have
+# Most instruments' CRT candle opens at 5AM NY. Indices (and BTCUSD) have
 # been observed to sometimes shift to a different hour depending on the day
 # (likely DST/session-calendar drift), so these list every hour worth
 # trying - the first one that yields a real (non-empty) result is used.
@@ -70,7 +69,7 @@ STATUS_COLORS = {
 
 STATUS_LABELS = {
     "waiting": "WAITING",
-    "sweep_only": "SWEPT - awaiting MSS",
+    "sweep_only": "SWEPT — awaiting MSS",
     "mss_confirmed": "SIGNAL LIVE",
     "no_data": "NO DATA",
 }
@@ -110,11 +109,11 @@ def signal_key(symbol, setup_name, state):
 
 
 def mss_signal_key(signal: MSSSignal) -> str:
-    """Fingerprint for a fully-confirmed 5 min NY CRT signal. Uses entry price
-    as the unique anchor - same logic as the Setup A/B signal_key - so
+    """Fingerprint for a fully-confirmed 5m NY CRT signal. Uses entry price
+    as the unique anchor — same logic as the Setup A/B signal_key — so
     re-running the workflow on an unchanged signal won't re-notify."""
     price = f"{signal.entry_price:.5f}"
-    return f"{signal.symbol}|5 min_CRT_confirmed|{signal.direction}|{price}"
+    return f"{signal.symbol}|5m_CRT_confirmed|{signal.direction}|{price}"
 
 
 def send_telegram_alert(message):
@@ -149,13 +148,13 @@ def build_alert_message(symbol, state: SetupState) -> str:
     conf = ", ".join(state.confluence) if state.confluence else "none"
     direction_word = "BUY" if state.direction == "long" else "SELL"
     emoji = "🟢" if state.direction == "long" else "🔴"
-    trend_line = "\n! *AGAINST 4-hour TREND*\n" if state.against_trend else ""
+    trend_line = "\n⚠️ *AGAINST 4H TREND*\n" if state.against_trend else ""
 
-    tp1_line = f"TP1 (-> BE): `{state.tp1:.5f}`\n" if state.tp1 is not None else "TP1: no liquidity found yet\n"
+    tp1_line = f"TP1 (→ BE): `{state.tp1:.5f}`\n" if state.tp1 is not None else "TP1: no liquidity found yet\n"
     tp2_line = f"TP2: `{state.tp2:.5f}`\n" if state.tp2 is not None else ""
 
     return (
-        f"{emoji} *{direction_word} - {symbol}*\n"
+        f"{emoji} *{direction_word} — {symbol}*\n"
         f"_{state.setup_name}_\n"
         f"{trend_line}\n"
         f"Entry: `{state.entry_price:.5f}`\n"
@@ -168,23 +167,23 @@ def build_alert_message(symbol, state: SetupState) -> str:
 
 def build_mss_alert_message(signal: MSSSignal) -> str:
     """
-    Telegram message for a fully-confirmed 5 min NY CRT signal.
-    Only sent after sweep + MSS + confluence + in-range entry are all met -
+    Telegram message for a fully-confirmed 5m NY CRT signal.
+    Only sent after sweep + MSS + confluence + in-range entry are all met —
     so the format mirrors the Setup A/B alert exactly.
     """
     conf = ", ".join(signal.confluence) if signal.confluence else "none"
     direction_word = "BUY" if signal.direction == "long" else "SELL"
     emoji = "🟢" if signal.direction == "long" else "🔴"
-    trend_line = "\n! *AGAINST 4-hour TREND*\n" if signal.against_trend else ""
+    trend_line = "\n⚠️ *AGAINST 4H TREND*\n" if signal.against_trend else ""
     time_str = signal.signal_time.strftime("%H:%M NY") if signal.signal_time else ""
     time_line = f"Time: {time_str}\n" if time_str else ""
 
-    tp1_line = f"TP1 (-> BE): `{signal.tp1:.5f}`\n" if signal.tp1 is not None else "TP1: no liquidity found yet\n"
+    tp1_line = f"TP1 (→ BE): `{signal.tp1:.5f}`\n" if signal.tp1 is not None else "TP1: no liquidity found yet\n"
     tp2_line = f"TP2: `{signal.tp2:.5f}`\n" if signal.tp2 is not None else ""
 
     return (
-        f"{emoji} *{direction_word} - {signal.symbol}*\n"
-        f"_NY 5 AM CRT (5 min confirmed)_\n"
+        f"{emoji} *{direction_word} — {signal.symbol}*\n"
+        f"_NY 5AM CRT (5m confirmed)_\n"
         f"{trend_line}\n"
         f"Entry: `{signal.entry_price:.5f}`\n"
         f"Stop Loss: `{signal.stop_loss:.5f}`\n"
@@ -218,7 +217,7 @@ OANDA_INSTRUMENTS = {
 
 
 def fetch_oanda(name, granularity, count):
-    """Pulls OHLC candles from OANDA v20 API.
+    """Pulls OHLC candles from OANDA's v20 API.
     granularity: OANDA codes - "D" (daily), "H1" (1 hour), "M15" (15 min),
                                "M30" (30 min), "M5" (5 min)"""
     instrument = OANDA_INSTRUMENTS.get(name)
@@ -280,14 +279,14 @@ def fetch(name, interval, period):
     empty DataFrame (not an exception) if both sources fail, so callers
     can check .empty rather than needing a try/except at every call site.
 
-    interval: "1d", "1h", "30m", "15 min", "5 min" (mapped internally to each source codes)
+    interval: "1d", "1h", "30m", "15m", "5m" (mapped internally to each source's codes)
     """
     oanda_map = {
         "1d":  ("D",   30),
         "1h":  ("H1",  500),
         "30m": ("M30", 2000),
-        "15 min": ("M15", 2000),
-        "5 min":  ("M5",  500),
+        "15m": ("M15", 2000),
+        "5m":  ("M5",  500),
     }
     oanda_granularity, oanda_count = oanda_map.get(interval, ("M15", 2000))
 
@@ -296,12 +295,12 @@ def fetch(name, interval, period):
         return df
 
     # OANDA unavailable/empty - fall back to Yahoo (Yahoo doesn't have 30m,
-    # so we resample from 15 min in that case)
+    # so we resample from 15m in that case)
     ticker = SYMBOLS.get(name)
     if ticker:
         print(f"OANDA returned nothing for {name} ({interval}) - trying Yahoo Finance backup.")
         if interval == "30m":
-            df_15 = fetch_yahoo(ticker, "15 min", "60d")
+            df_15 = fetch_yahoo(ticker, "15m", "60d")
             if not df_15.empty:
                 try:
                     return df_15.resample("30min").agg(
@@ -310,8 +309,8 @@ def fetch(name, interval, period):
                 except Exception:
                     pass
             return pd.DataFrame()
-        yahoo_interval = {"1d": "1d", "1h": "1h", "15 min": "15 min", "5 min": "5 min"}.get(interval, "15 min")
-        yahoo_period = {"1d": "30d", "1h": "60d", "15 min": "60d", "5 min": "5d"}.get(interval, "60d")
+        yahoo_interval = {"1d": "1d", "1h": "1h", "15m": "15m", "5m": "5m"}.get(interval, "15m")
+        yahoo_period = {"1d": "30d", "1h": "60d", "15m": "60d", "5m": "5d"}.get(interval, "60d")
         return fetch_yahoo(ticker, yahoo_interval, yahoo_period)
 
     return pd.DataFrame()
@@ -325,13 +324,17 @@ def safe_setup_state(setup_name, symbol, note):
 
 
 def build_4h_anchored_to_hour(df_1h: pd.DataFrame, target_hour: int) -> pd.DataFrame:
-    """Resamples 1-hour OHLC data into 4-hour candles anchored to target_hour in NY time."""
-    # A plain df.resample("4h") uses whatever boundary pandas defaults to
-    # based on the data's own timezone/origin, which only coincidentally
-    # lines up with 5 AM NY for some instruments and not others (e.g. index
-    # CFDs like NAS100/US30 that run on a session grid offset by an hour).
-    # This anchors explicitly so the right instrument gets the right candle.
-    # Example: target_hour=5 gives bins at 5,9,13,17,21,1 AM NY.
+    """
+    Resamples 1H OHLC data into 4H candles whose bin edges are anchored to
+    target_hour in NEW YORK time (e.g. bins at 5,9,13,17,21,1 AM NY for
+    target_hour=5, or 6,10,14,18,22,2 AM NY for target_hour=6).
+
+    A plain df.resample("4h") uses whatever boundary pandas defaults to
+    based on the data's own timezone/origin, which only coincidentally
+    lines up with 5AM NY for some instruments and not others (e.g. index
+    CFDs like NAS100/US30 that run on a session grid offset by an hour).
+    This anchors explicitly so the right instrument gets the right candle.
+    """
     if df_1h.empty:
         return pd.DataFrame()
 
@@ -359,8 +362,8 @@ def analyze_symbol(name, ticker):
         df_daily = fetch(name, "1d", "30d")
         df_15m = fetch(name, "15m", "60d")
         df_30m = fetch(name, "30m", "60d")
-        df_1h = fetch(name, "1h", "60d")   # resampled to 4-hour below, anchored per-instrument
-        df_5m = fetch(name, "5m", "5d")    # for 5 min MSS/BOS during NY session
+        df_1h = fetch(name, "1h", "60d")   # resampled to 4H below, anchored per-instrument
+        df_5m = fetch(name, "5m", "5d")    # for 5m MSS/BOS during NY session
 
         # Setup A - Daily PDH/PDL
         if not df_daily.empty and not df_15m.empty:
@@ -391,32 +394,32 @@ def analyze_symbol(name, ticker):
         for hour in candidate_hours:
             df_4h = build_4h_anchored_to_hour(df_1h, hour)
             if df_4h.empty or df_15m.empty:
-                candidate_state = safe_setup_state("NY 5 AM CRT", name, "No data available for this symbol yet.")
+                candidate_state = safe_setup_state("NY 5AM CRT", name, "No data available for this symbol yet.")
             else:
                 try:
                     candidate_state = analyze_ny_crt_setup(df_4h, df_15m, name, target_hour=hour, df_daily=df_daily)
                 except Exception as e:
-                    candidate_state = safe_setup_state("NY 5 AM CRT", name, f"Analysis error: {e}")
+                    candidate_state = safe_setup_state("NY 5AM CRT", name, f"Analysis error: {e}")
 
             if best_state is None or _candidate_score(candidate_state) > _candidate_score(best_state):
                 best_state = candidate_state
 
         results["setup_b"] = best_state
 
-        # 5 min fully-confirmed NY CRT signal - only fires when ALL gates pass:
-        # CRT range sweep -> MSS -> confluence -> entry inside the range.
-        # Only attempted during the live NY session with valid 5 min data.
+        # 5m fully-confirmed NY CRT signal — only fires when ALL gates pass:
+        # CRT range sweep → MSS → confluence → entry inside the range.
+        # Only attempted during the live NY session with valid 5m data.
         ny_now = pd.Timestamp.now(tz=NY_TZ)
         current_hour_ny = ny_now.hour + ny_now.minute / 60
         if 9 <= current_hour_ny < 17 and not df_5m.empty:
             crt_high = best_state.range_high if best_state and best_state.range_high == best_state.range_high else None
             crt_low  = best_state.range_low  if best_state and best_state.range_low  == best_state.range_low  else None
-            # Pass the same 4-hour bias used by Setup B so the trend tag is consistent
+            # Pass the same 4H bias used by Setup B so the trend tag is consistent
             try:
-                htf_bias_5m = best_state.notes  # not the bias itself - compute it properly below
+                htf_bias_5m = best_state.notes  # not the bias itself — compute it properly below
             except Exception:
                 htf_bias_5m = "neutral"
-            # Recompute bias from 4-hour data (same method as Setup B)
+            # Recompute bias from 4H data (same method as Setup B)
             try:
                 from strategy_v2 import compute_htf_bias
                 df_4h_for_bias = build_4h_anchored_to_hour(df_1h, candidate_hours[0])
@@ -424,16 +427,16 @@ def analyze_symbol(name, ticker):
             except Exception:
                 htf_bias_5m = "neutral"
             try:
-                results["mss_5min"] = detect_5m_mss_bos(
+                results["mss_5m"] = detect_5m_mss_bos(
                     df_5m, name, crt_high, crt_low, htf_bias=htf_bias_5m
                 )
             except Exception as e:
-                print(f"5 min confirmed signal detection error for {name}: {e}")
-                results["mss_5min"] = None
+                print(f"5m confirmed signal detection error for {name}: {e}")
+                results["mss_5m"] = None
         else:
-            results["mss_5min"] = None
+            results["mss_5m"] = None
 
-        # Setup C - Major Liquidity (15 min / 30m / 1h)
+        # Setup C - Major Liquidity (15m / 30m / 1h)
         try:
             results["setup_c"] = run_major_liquidity_across_timeframes(
                 df_15m=df_15m if not df_15m.empty else None,
@@ -449,7 +452,7 @@ def analyze_symbol(name, ticker):
         results["setup_a"] = err_state
         results["setup_b"] = err_state
         results["setup_c"] = err_state
-        results["mss_5min"] = None
+        results["mss_5m"] = None
 
     return results
 
@@ -457,11 +460,11 @@ def analyze_symbol(name, ticker):
 def fmt(value, decimals=4):
     """Safely formats a possibly-None numeric value for display."""
     if value is None:
-        return "-"
+        return "—"
     try:
         return f"{value:.{decimals}f}"
     except (TypeError, ValueError):
-        return "-"
+        return "—"
 
 
 def render_setup_card(state: SetupState) -> str:
@@ -475,111 +478,110 @@ def render_setup_card(state: SetupState) -> str:
     if is_live_signal:
         color, label = STATUS_COLORS["mss_confirmed"], STATUS_LABELS["mss_confirmed"]
         if state.against_trend:
-            label = "SIGNAL LIVE !"
+            label = "SIGNAL LIVE ⚠"
     elif is_filtered:
-        color, label = "#555", "FILTERED - no entry"
+        color, label = "#555", "FILTERED — no entry"
     else:
         color = STATUS_COLORS.get(state.status, "#555")
         label = STATUS_LABELS.get(state.status, (state.status or "unknown").upper())
 
     levels_html = ""
     if is_live_signal:
-        conf = ", ".join(state.confluence) if state.confluence else "-"
+        conf = ", ".join(state.confluence) if state.confluence else "—"
         dir_color = "#1e9e5a" if state.direction == "long" else "#c0392b"
-        direction_label = "BUY" if state.direction == "long" else "SELL" if state.direction == "short" else "-"
-        trend_warning = '<div class="row" style="color:#c9a227"><span>! Against 4-hour trend</span><b></b></div>' if state.against_trend else ""
-        levels_html = (
-            "<div class=\"levels\">"
-            f"  <div class=\"dir\" style=\"color:{dir_color}\">{direction_label}</div>"
-            f"  {trend_warning}"
-            f"  <div class=\"row\"><span>Entry</span><b>{fmt(state.entry_price)}</b></div>"
-            f"  <div class=\"row\"><span>Stop Loss</span><b>{fmt(state.stop_loss)}</b></div>"
-            f"  <div class=\"row\"><span>TP1 (-> move SL to BE)</span><b>{fmt(state.tp1)}</b></div>"
-            f"  <div class=\"row\"><span>TP2</span><b>{fmt(state.tp2)}</b></div>"
-            f"  <div class=\"row\"><span>Confluence</span><b>{conf}</b></div>"
-            "</div>"
-        )
+        direction_label = "BUY" if state.direction == "long" else "SELL" if state.direction == "short" else "—"
+        trend_warning = '<div class="row" style="color:#c9a227"><span>⚠ Against 4H trend</span><b></b></div>' if state.against_trend else ""
+        levels_html = f"""
+        <div class="levels">
+          <div class="dir" style="color:{dir_color}">{direction_label}</div>
+          {trend_warning}
+          <div class="row"><span>Entry</span><b>{fmt(state.entry_price)}</b></div>
+          <div class="row"><span>Stop Loss</span><b>{fmt(state.stop_loss)}</b></div>
+          <div class="row"><span>TP1 (→ move SL to BE)</span><b>{fmt(state.tp1)}</b></div>
+          <div class="row"><span>TP2</span><b>{fmt(state.tp2)}</b></div>
+          <div class="row"><span>Confluence</span><b>{conf}</b></div>
+        </div>
+        """
     elif state.status == "sweep_only":
         side = "HIGH" if state.sweep_side == "high" else "LOW"
-        levels_html = (
-            "<div class=\"levels\">"
-            f"  <div class=\"row\"><span>Swept</span><b>{state.range_label} {side}</b></div>"
-            f"  <div class=\"row\"><span>Sweep price</span><b>{fmt(state.sweep_price)}</b></div>"
-            "</div>"
-        )
+        levels_html = f"""
+        <div class="levels">
+          <div class="row"><span>Swept</span><b>{state.range_label} {side}</b></div>
+          <div class="row"><span>Sweep price</span><b>{fmt(state.sweep_price)}</b></div>
+        </div>
+        """
 
     range_html = ""
     if state.range_high is not None and state.range_high == state.range_high:  # not NaN
-        range_html = f'<div class="range">{state.range_label}: {fmt(state.range_low)} - {fmt(state.range_high)}</div>'
+        range_html = f'<div class="range">{state.range_label}: {fmt(state.range_low)} — {fmt(state.range_high)}</div>'
 
     notes = state.notes or ""
 
-    return (
-        "<div class=\"setup-card\">"
-        "  <div class=\"setup-header\">"
-        f"    <span class=\"setup-name\">{state.setup_name}</span>"
-        f"    <span class=\"status-pill\" style=\"background:{color}\">{label}</span>"
-        "  </div>"
-        f"  {range_html}"
-        f"  {levels_html}"
-        f"  <div class=\"notes\">{notes}</div>"
-        "</div>"
-    )
-
-
-def render_mss_5min_card(signal: MSSSignal) -> str:
+    return f"""
+    <div class="setup-card">
+      <div class="setup-header">
+        <span class="setup-name">{state.setup_name}</span>
+        <span class="status-pill" style="background:{color}">{label}</span>
+      </div>
+      {range_html}
+      {levels_html}
+      <div class="notes">{notes}</div>
+    </div>
     """
-    Renders a full signal card for a confirmed 5 minute NY CRT setup.
+
+
+def render_mss_5m_card(signal: MSSSignal) -> str:
+    """
+    Renders a full signal card for a confirmed 5m NY CRT setup.
     Only shown when ALL gates passed (sweep + MSS + confluence + in-range
-    entry), so the card always carries a complete entry/SL/TP layout.
-    Identical in structure to the Setup A and Setup B signal cards.
+    entry), so the card always carries a complete entry/SL/TP layout —
+    identical in structure to the Setup A and Setup B signal cards.
     """
     if signal is None:
         return ""
 
     dir_color = "#1e9e5a" if signal.direction == "long" else "#c0392b"
     direction_label = "BUY" if signal.direction == "long" else "SELL"
-    conf = ", ".join(signal.confluence) if signal.confluence else "-"
+    conf = ", ".join(signal.confluence) if signal.confluence else "—"
     time_str = signal.signal_time.strftime("%H:%M NY") if signal.signal_time else ""
     trend_warning = (
-        '<div class="row" style="color:#c9a227"><span>! Against 4-hour trend</span><b></b></div>'
+        '<div class="row" style="color:#c9a227"><span>⚠ Against 4H trend</span><b></b></div>'
         if signal.against_trend else ""
     )
-    time_row = '<div class="row"><span>Time</span><b>' + time_str + '</b></div>' if time_str else ""
 
-    return (
-        "<div class=\"setup-card mss-card\">"
-        "  <div class=\"setup-header\">"
-        "    <span class=\"setup-name\">NY 5 AM CRT (5 min confirmed)</span>"
-        "    <span class=\"status-pill\" style=\"background:#1e9e5a\">SIGNAL LIVE</span>"
-        "  </div>"
-        f"  <div class=\"range\">CRT Range: {fmt(signal.crt_range_low)} - {fmt(signal.crt_range_high)}</div>"
-        "  <div class=\"levels\">"
-        f"    <div class=\"dir\" style=\"color:{dir_color}\">{direction_label}</div>"
-        f"    {trend_warning}"
-        f"    <div class=\"row\"><span>Entry</span><b>{fmt(signal.entry_price)}</b></div>"
-        f"    <div class=\"row\"><span>Stop Loss</span><b>{fmt(signal.stop_loss)}</b></div>"
-        f"    <div class=\"row\"><span>TP1 (-> move SL to BE)</span><b>{fmt(signal.tp1)}</b></div>"
-        f"    <div class=\"row\"><span>TP2</span><b>{fmt(signal.tp2)}</b></div>"
-        f"    <div class=\"row\"><span>Confluence</span><b>{conf}</b></div>"
-        f"    {time_row}"
-        "  </div>"
-        f"  <div class=\"notes\">{signal.notes}</div>"
-        "</div>"
-    )
+    return f"""
+    <div class="setup-card mss-card">
+      <div class="setup-header">
+        <span class="setup-name">NY 5AM CRT (5m confirmed)</span>
+        <span class="status-pill" style="background:#1e9e5a">SIGNAL LIVE</span>
+      </div>
+      <div class="range">CRT Range: {fmt(signal.crt_range_low)} — {fmt(signal.crt_range_high)}</div>
+      <div class="levels">
+        <div class="dir" style="color:{dir_color}">{direction_label}</div>
+        {trend_warning}
+        <div class="row"><span>Entry</span><b>{fmt(signal.entry_price)}</b></div>
+        <div class="row"><span>Stop Loss</span><b>{fmt(signal.stop_loss)}</b></div>
+        <div class="row"><span>TP1 (→ move SL to BE)</span><b>{fmt(signal.tp1)}</b></div>
+        <div class="row"><span>TP2</span><b>{fmt(signal.tp2)}</b></div>
+        <div class="row"><span>Confluence</span><b>{conf}</b></div>
+        {"<div class='row'><span>Time</span><b>" + time_str + "</b></div>" if time_str else ""}
+      </div>
+      <div class="notes">{signal.notes}</div>
+    </div>
+    """
 
 
 def render_instrument_section(name, results) -> str:
-    mss_card = render_mss_5min_card(results.get("mss_5min"))
-    return (
-        "<div class=\"instrument\">"
-        f"  <h2>{name}</h2>"
-        f"  {render_setup_card(results['setup_a'])}"
-        f"  {render_setup_card(results['setup_b'])}"
-        f"  {mss_card}"
-        f"  {render_setup_card(results['setup_c'])}"
-        "</div>"
-    )
+    mss_card = render_mss_5m_card(results.get("mss_5m"))
+    return f"""
+    <div class="instrument">
+      <h2>{name}</h2>
+      {render_setup_card(results['setup_a'])}
+      {render_setup_card(results['setup_b'])}
+      {mss_card}
+      {render_setup_card(results['setup_c'])}
+    </div>
+    """
 
 
 def build_dashboard():
@@ -597,7 +599,7 @@ def build_dashboard():
                 "setup_a": err_state,
                 "setup_b": err_state,
                 "setup_c": err_state,
-                "mss_5min": None,
+                "mss_5m": None,
             }
         sections.append(render_instrument_section(name, results))
 
@@ -611,98 +613,94 @@ def build_dashboard():
                     print(f"New signal detected: {key} - sending Telegram alert")
                     send_telegram_alert(build_alert_message(name, state))
 
-        # check 5 min MSS/BOS alert
-        mss_sig = results.get("mss_5min")
+        # check 5m MSS/BOS alert
+        mss_sig = results.get("mss_5m")
         if mss_sig is not None:
             key = mss_signal_key(mss_sig)
             current_signals[key] = True
             if key not in previous_signals:
-                print(f"New 5 min confirmed signal detected for {name} ({mss_sig.direction}) - sending Telegram alert")
+                print(f"New 5m confirmed signal detected for {name} ({mss_sig.direction}) - sending Telegram alert")
                 send_telegram_alert(build_mss_alert_message(mss_sig))
 
     save_signals(current_signals)
 
-    # CSS template - using double braces to escape for f-string
-    css = (
-        "* {{ box-sizing: border-box; }}"
-        "body {{"
-        "  margin: 0; padding: 16px;"
-        "  background: #0d0d0f; color: #eee;"
-        "  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;"
-        "}}"
-        "header {{ margin-bottom: 20px; }}"
-        "header h1 {{ font-size: 20px; margin: 0 0 4px 0; text-align: center; }}"
-        "header .ts {{ font-size: 12px; color: #888; }}"
-        ".instrument {{ margin-bottom: 24px; }}"
-        ".instrument h2 {{"
-        "  font-size: 16px; margin: 0 0 8px 0; color: #fff;"
-        "  border-bottom: 1px solid #222; padding-bottom: 6px;"
-        "}}"
-        ".setup-card {{"
-        "  background: #16161a; border-radius: 10px; padding: 12px 14px;"
-        "  margin-bottom: 10px; border: 1px solid #232327;"
-        "}}"
-        ".setup-card.mss-card {{"
-        "  border-color: #2a2a1a;"
-        "  background: #18180e;"
-        "}}"
-        ".setup-header {{"
-        "  display: flex; justify-content: space-between; align-items: center;"
-        "  margin-bottom: 6px;"
-        "}}"
-        ".setup-name {{ font-size: 13px; color: #ccc; font-weight: 600; }}"
-        ".status-pill {{"
-        "  font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 20px;"
-        "  color: #fff; letter-spacing: 0.3px;"
-        "}}"
-        ".range {{ font-size: 11px; color: #888; margin-bottom: 6px; }}"
-        ".levels {{ background: #0f0f12; border-radius: 8px; padding: 8px 10px; margin: 6px 0; }}"
-        ".levels .dir {{ font-size: 12px; font-weight: 800; margin-bottom: 4px; letter-spacing: 0.5px; }}"
-        ".levels .row {{"
-        "  display: flex; justify-content: space-between; font-size: 12px;"
-        "  padding: 2px 0; color: #bbb;"
-        "}}"
-        ".levels .row b {{ color: #fff; }}"
-        ".notes {{ font-size: 11px; color: #777; margin-top: 6px; line-height: 1.4; }}"
-        "footer {{ font-size: 10px; color: #555; text-align: center; margin-top: 24px; padding-bottom: 20px; }}"
-        ".refresh-btn {{"
-        "  display: flex; align-items: center; justify-content: center; gap: 8px;"
-        "  background: #1a1a1f; border: 1px solid #2a2a30; color: #eee;"
-        "  text-decoration: none; font-size: 13px; font-weight: 600;"
-        "  padding: 12px 16px; border-radius: 10px; margin-top: 10px;"
-        "}}"
-        ".refresh-btn:active {{ background: #232328; }}"
-        ".refresh-note {{ font-size: 10px; color: #666; text-align: center; margin-top: 6px; line-height: 1.4; }}"
-    )
-
-    html = (
-        "<!DOCTYPE html>"
-        "<html lang=\"en\">"
-        "<head>"
-        "<meta charset=\"UTF-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
-        "<title>Exclusive FX - Daily Dashboard</title>"
-        f"<style>{css}</style>"
-        "</head>"
-        "<body>"
-        "<header>"
-        f"  <h1>Exclusive FX - Daily Setup Dashboard</h1>"
-        f"  <div class=\"ts\">Updated {now}</div>"
-        f"  <a class=\"refresh-btn\" href=\"{REPO_ACTIONS_URL}\" target=\"_blank\" rel=\"noopener\">"
-        "    Refresh Analysis"
-        "  </a>"
-        '  <div class="refresh-note">Opens GitHub Actions - tap the green "Run workflow" button there, wait ~30s, then come back and reload this page.</div>'
-        "</header>"
-        f"{''.join(sections)}"
-        "<footer>"
-        "  Setup A = Daily PDH/PDL sweep | Setup B = NY 5 AM candle range (CRT) | Setup C = Major Liquidity (15 min/30m/1h)<br>"
-        "  5 min MSS/BOS shown during NY session (9AM-5PM NY) as early structure alert<br>"
-        "  TP1 = nearest unswept liquidity -> move SL to breakeven | TP2 = next liquidity beyond<br>"
-        "  Not financial advice. Demo-test before live."
-        "</footer>"
-        "</body>"
-        "</html>"
-    )
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Exclusive FX — Daily Dashboard</title>
+<style>
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0; padding: 16px;
+    background: #0d0d0f; color: #eee;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }}
+  header {{ margin-bottom: 20px; }}
+  header h1 {{ font-size: 20px; margin: 0 0 4px 0; text-align: center; }}
+  header .ts {{ font-size: 12px; color: #888; }}
+  .instrument {{ margin-bottom: 24px; }}
+  .instrument h2 {{
+    font-size: 16px; margin: 0 0 8px 0; color: #fff;
+    border-bottom: 1px solid #222; padding-bottom: 6px;
+  }}
+  .setup-card {{
+    background: #16161a; border-radius: 10px; padding: 12px 14px;
+    margin-bottom: 10px; border: 1px solid #232327;
+  }}
+  .setup-card.mss-card {{
+    border-color: #2a2a1a;
+    background: #18180e;
+  }}
+  .setup-header {{
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 6px;
+  }}
+  .setup-name {{ font-size: 13px; color: #ccc; font-weight: 600; }}
+  .status-pill {{
+    font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 20px;
+    color: #fff; letter-spacing: 0.3px;
+  }}
+  .range {{ font-size: 11px; color: #888; margin-bottom: 6px; }}
+  .levels {{ background: #0f0f12; border-radius: 8px; padding: 8px 10px; margin: 6px 0; }}
+  .levels .dir {{ font-size: 12px; font-weight: 800; margin-bottom: 4px; letter-spacing: 0.5px; }}
+  .levels .row {{
+    display: flex; justify-content: space-between; font-size: 12px;
+    padding: 2px 0; color: #bbb;
+  }}
+  .levels .row b {{ color: #fff; }}
+  .notes {{ font-size: 11px; color: #777; margin-top: 6px; line-height: 1.4; }}
+  footer {{ font-size: 10px; color: #555; text-align: center; margin-top: 24px; padding-bottom: 20px; }}
+  .refresh-btn {{
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    background: #1a1a1f; border: 1px solid #2a2a30; color: #eee;
+    text-decoration: none; font-size: 13px; font-weight: 600;
+    padding: 12px 16px; border-radius: 10px; margin-top: 10px;
+  }}
+  .refresh-btn:active {{ background: #232328; }}
+  .refresh-note {{ font-size: 10px; color: #666; text-align: center; margin-top: 6px; line-height: 1.4; }}
+</style>
+</head>
+<body>
+<header>
+  <h1>Exclusive FX — Daily Setup Dashboard</h1>
+  <div class="ts">Updated {now}</div>
+  <a class="refresh-btn" href="{REPO_ACTIONS_URL}" target="_blank" rel="noopener">
+    ⟳ Refresh Analysis
+  </a>
+  <div class="refresh-note">Opens GitHub Actions — tap the green "Run workflow" button there, wait ~30s, then come back and reload this page.</div>
+</header>
+{''.join(sections)}
+<footer>
+  Setup A = Daily PDH/PDL sweep · Setup B = NY 5AM candle range (CRT) · Setup C = Major Liquidity (15m/30m/1h)<br>
+  5m MSS/BOS shown during NY session (9AM–5PM NY) as early structure alert<br>
+  TP1 = nearest unswept liquidity → move SL to breakeven · TP2 = next liquidity beyond<br>
+  Not financial advice. Demo-test before live.
+</footer>
+</body>
+</html>
+"""
     return html
 
 
@@ -716,16 +714,14 @@ if __name__ == "__main__":
     except Exception as e:
         print("FATAL ERROR building dashboard:")
         traceback.print_exc()
-        fallback_html = (
-            "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
-            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
-            "<title>Dashboard Error</title></head>"
-            "<body style=\"background:#0d0d0f;color:#eee;font-family:sans-serif;padding:20px;\">"
-            "<h1>Dashboard build failed</h1>"
-            f"<p>{str(e)}</p>"
-            f"<pre style=\"white-space:pre-wrap;font-size:11px;color:#999;\">{traceback.format_exc()}</pre>"
-            "</body></html>"
-        )
+        fallback_html = f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard Error</title></head>
+<body style="background:#0d0d0f;color:#eee;font-family:sans-serif;padding:20px;">
+<h1>Dashboard build failed</h1>
+<p>{str(e)}</p>
+<pre style="white-space:pre-wrap;font-size:11px;color:#999;">{traceback.format_exc()}</pre>
+</body></html>"""
         with open(out_path, "w") as f:
             f.write(fallback_html)
         raise
